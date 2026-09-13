@@ -1,4 +1,4 @@
-# Generated from environment/templates/default.json — do not hand-edit.
+# Generated from environment/templates/web.json — do not hand-edit.
 # one domain per line, '#' = comment. '*.example.com' matches subdomains only.
 github.com
 *.githubusercontent.com
@@ -7,3 +7,11 @@ registry.npmjs.org
 files.pythonhosted.org
 *.pypi.org
 api.anthropic.com
+stackoverflow.com
+*.stackexchange.com
+docs.python.org
+developer.mozilla.org
+crates.io
+*.crates.io
+proxy.golang.org
+pkg.go.dev

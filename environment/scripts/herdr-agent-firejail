@@ -1,24 +1,101 @@
 #!/usr/bin/env bash
 # herdr-agent-firejail — launch an agent CLI inside Firejail, wired to the allowlist proxy.
-# Usage: herdr-agent-firejail --worktree PATH --kind claude --budget-id w-feat-auth --budget-max 200 -- claude [args...]
+# Usage: herdr-agent-firejail [--template ALIAS] --worktree PATH [--kind claude] [--budget-id ID] [--budget-max N] [--proxy-port P] -- <agent> [args...]
+# Templates come from environment/templates/<alias>.json (see env-setup). Defaults: --template default.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WORKTREE=""; KIND="claude"; BUDGET_ID="default"; BUDGET_MAX="200"
+WORKTREE=""; KIND=""; KIND_SET=0; BUDGET_ID="default"; BUDGET_MAX=""; BUDGET_MAX_SET=0
+TEMPLATE="default"; PROXY_PORT=""; PROXY_PORT_SET=0
+LIST_TEMPLATES=0; SHOW_TEMPLATE=0
 while [[ $# -gt 0 ]]; do case "$1" in
   --worktree) WORKTREE="$2"; shift 2;;
-  --kind) KIND="$2"; shift 2;;
+  --kind) KIND="$2"; KIND_SET=1; shift 2;;
   --budget-id) BUDGET_ID="$2"; shift 2;;
-  --budget-max) BUDGET_MAX="$2"; shift 2;;
+  --budget-max) BUDGET_MAX="$2"; BUDGET_MAX_SET=1; shift 2;;
+  --proxy-port) PROXY_PORT="$2"; PROXY_PORT_SET=1; shift 2;;
+  --template|--env-template) TEMPLATE="$2"; shift 2;;
+  --list-templates) LIST_TEMPLATES=1; shift;;
+  --show-template) SHOW_TEMPLATE=1; shift;;
+  -h|--help)
+    echo "Usage: $(basename "$0") [--template ALIAS] --worktree PATH [--kind K] [--budget-id ID] [--budget-max N] [--proxy-port P] -- <agent> [args...]"
+    echo "  Templates: environment/templates/<alias>.json (create with: bash environment/scripts/env-setup)"
+    echo "  --list-templates   list available env templates and exit"
+    echo "  --show-template    print resolved profile/netfilter/allowlist + proxy command and exit"
+    exit 0;;
   --) shift; break;;
   *) echo "bad arg $1" >&2; exit 2;;
 esac; done
+
+TEMPLATE_FILE="$REPO_ROOT/environment/templates/$TEMPLATE.json"
+if [[ "$LIST_TEMPLATES" == 1 ]]; then
+  ls "$REPO_ROOT/environment/templates/"*.json 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\.json$//' || echo "(no templates)"
+  exit 0
+fi
+if [[ ! -f "$TEMPLATE_FILE" ]]; then
+  echo "unknown --template '$TEMPLATE' (missing $TEMPLATE_FILE)" >&2
+  echo "create it with: bash environment/scripts/env-setup" >&2
+  exit 2
+fi
+
+# Resolve template fields via stdlib python (no jq needed).
+eval "$(GULYAS_TEMPLATE="$TEMPLATE" REPO_ROOT="$REPO_ROOT" python3 - <<'EOF'
+import json, os
+root = os.environ["REPO_ROOT"]
+alias = os.environ["GULYAS_TEMPLATE"]
+t = json.load(open(f"{root}/environment/templates/{alias}.json"))
+net = t.get("network", {})
+ag = t.get("agent", {})
+def q(s): return "'" + s.replace("'", "'\\''") + "'"
+print(f"TEMPLATE_PORT={int(net.get('proxy_port', 8888))}")
+print(f"TEMPLATE_BUDGET_MAX={int(net.get('budget_max_default', 200))}")
+print(f"TEMPLATE_KIND={q(str(ag.get('default_kind', 'claude')))}")
+print(f"TEMPLATE_ALLOWLIST={q(alias if alias != 'default' else '')}")
+EOF
+)"
+[[ "$KIND_SET" == 1 ]] || KIND="$TEMPLATE_KIND"
+[[ "$BUDGET_MAX_SET" == 1 ]] || BUDGET_MAX="$TEMPLATE_BUDGET_MAX"
+[[ "$PROXY_PORT_SET" == 1 ]] || PROXY_PORT="$TEMPLATE_PORT"
+
+# Per-template artifact names (must match lib_env_template.artifact_paths).
+if [[ "$TEMPLATE" == "default" ]]; then
+  REPO_PROFILE="$REPO_ROOT/environment/firejail/herdr-agent.profile"
+  REPO_NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter.net"
+  REPO_ALLOWLIST="$REPO_ROOT/environment/proxy/config/allowlist.txt"
+else
+  REPO_PROFILE="$REPO_ROOT/environment/firejail/herdr-agent-$TEMPLATE.profile"
+  REPO_NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter-$TEMPLATE.net"
+  REPO_ALLOWLIST="$REPO_ROOT/environment/proxy/config/allowlist-$TEMPLATE.txt"
+fi
+INSTALLED_PROFILE="$HOME/.config/firejail/$(basename "$REPO_PROFILE")"
+INSTALLED_NETFILTER="$HOME/.config/firejail/$(basename "$REPO_NETFILTER")"
+INSTALLED_ALLOWLIST="$HOME/.config/herdr-web-proxy/$(basename "$REPO_ALLOWLIST")"
+
+pick_file() { # $1=env-override $2=installed $3=repo $4=fallback-repo
+  if [[ -n "${!1:-}" && -f "${!1}" ]]; then echo "${!1}"; return; fi
+  if [[ -f "$2" ]]; then echo "$2"; return; fi
+  if [[ -f "$3" ]]; then echo "$3"; return; fi
+  echo "$4"
+}
+BASE_PROFILE="$REPO_ROOT/environment/firejail/herdr-agent.profile"
+BASE_NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter.net"
+PROFILE="$(pick_file FIREJAIL_PROFILE "$INSTALLED_PROFILE" "$REPO_PROFILE" "$BASE_PROFILE")"
+NETFILTER="$(pick_file FIREJAIL_NETFILTER "$INSTALLED_NETFILTER" "$REPO_NETFILTER" "$BASE_NETFILTER")"
+if [[ -f "$INSTALLED_ALLOWLIST" ]]; then ALLOWLIST_FILE="$INSTALLED_ALLOWLIST"; else ALLOWLIST_FILE="$REPO_ALLOWLIST"; fi
+
+if [[ "$SHOW_TEMPLATE" == 1 ]]; then
+  echo "template:  $TEMPLATE ($TEMPLATE_FILE)"
+  echo "profile:   $PROFILE"
+  echo "netfilter: $NETFILTER"
+  echo "allowlist: $ALLOWLIST_FILE"
+  echo "kind=$KIND budget_max=$BUDGET_MAX proxy_port=$PROXY_PORT"
+  echo "proxy:     .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port $PROXY_PORT --allowlist $ALLOWLIST_FILE"
+  exit 0
+fi
 if [[ -z "$WORKTREE" ]]; then echo "--worktree PATH required" >&2; exit 2; fi
 if [[ $# -eq 0 ]]; then echo "agent command required after --" >&2; exit 2; fi
-PROFILE="${FIREJAIL_PROFILE:-$HOME/.config/firejail/herdr-agent.profile}"
-NETFILTER="${FIREJAIL_NETFILTER:-$HOME/.config/firejail/herdr-netfilter.net}"
 # Fall back to repo copies if not installed yet (dev mode)
-[[ -f "$PROFILE" ]] || PROFILE="$REPO_ROOT/environment/firejail/herdr-agent.profile"
-[[ -f "$NETFILTER" ]] || NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter.net"
+[[ -f "$PROFILE" ]] || PROFILE="$BASE_PROFILE"
+[[ -f "$NETFILTER" ]] || NETFILTER="$BASE_NETFILTER"
 exec firejail \
   --profile="$PROFILE" \
   --name="herdr-$(basename "$WORKTREE")-$$" \
@@ -28,9 +105,9 @@ exec firejail \
   --env=HERDR_WORKTREE="$WORKTREE" \
   --env=BUDGET_ID="$BUDGET_ID" \
   --env=BUDGET_MAX="$BUDGET_MAX" \
-  --env=http_proxy=http://127.0.0.1:8888 \
-  --env=https_proxy=http://127.0.0.1:8888 \
-  --env=HTTP_PROXY=http://127.0.0.1:8888 \
-  --env=HTTPS_PROXY=http://127.0.0.1:8888 \
+  --env=http_proxy=http://127.0.0.1:"$PROXY_PORT" \
+  --env=https_proxy=http://127.0.0.1:"$PROXY_PORT" \
+  --env=HTTP_PROXY=http://127.0.0.1:"$PROXY_PORT" \
+  --env=HTTPS_PROXY=http://127.0.0.1:"$PROXY_PORT" \
   --env=NO_PROXY=localhost,127.0.0.1 \
   "$@"

@@ -1,4 +1,4 @@
-# Generated from environment/templates/default.json — do not hand-edit.
+# Generated from environment/templates/offline.json — do not hand-edit.
 *filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -7,6 +7,4 @@
 -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 -A OUTPUT -o lo -j ACCEPT
 -A OUTPUT -d 127.0.0.1 -p tcp --dport 8888 -j ACCEPT
--A OUTPUT -p udp --dport 53 -j ACCEPT
--A OUTPUT -p tcp --dport 53 -j ACCEPT
 COMMIT

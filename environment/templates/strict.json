@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "alias": "strict",
+  "description": "Paranoid runs: tight tool gate, extra secret blacklists, narrow allowlist, budget 50.",
+  "filesystem": {
+    "strictness": "strict",
+    "noroot": true,
+    "nonewprivs": true,
+    "seccomp": true,
+    "private_tmp": true,
+    "private_dev": true,
+    "disable_mnt": true,
+    "nox11": true,
+    "nodbus": true,
+    "restrict_namespaces": true,
+    "memory_deny_write_execute": true,
+    "private_etc": ["passwd", "group", "hostname", "hosts", "resolv.conf", "ssl", "ca-certificates", "crypto-policies", "pki", "nsswitch.conf"],
+    "read_only_toolchain": ["/usr"],
+    "read_only_dirs": ["${HOME}/.config/herdr"],
+    "writable_caches": ["${HOME}/.npm", "${HOME}/go/pkg/mod"],
+    "blacklist": ["${HOME}/.ssh", "${HOME}/.gnupg", "${HOME}/.aws", "${HOME}/.config/gh", "${HOME}/.config/herdr", "${HOME}/.pki", "${HOME}/.docker", "${HOME}/.git-credentials"],
+    "noblacklist": ["${HOME}/.herdr/worktrees"],
+    "allowed_tools": ["bash", "sh", "env", "git", "python3", "node", "npm", "ls", "cat", "grep", "sed", "find"]
+  },
+  "network": {
+    "proxy_port": 8888,
+    "allowlist": [
+      "github.com",
+      "api.anthropic.com"
+    ],
+    "budget_max_default": 50,
+    "allow_dns": true,
+    "direct_egress": false
+  },
+  "agent": {
+    "default_kind": "claude",
+    "deny_outside_worktree": true
+  }
+}

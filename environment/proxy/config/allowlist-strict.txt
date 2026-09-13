@@ -1,0 +1,4 @@
+# Generated from environment/templates/strict.json — do not hand-edit.
+# one domain per line, '#' = comment. '*.example.com' matches subdomains only.
+github.com
+api.anthropic.com

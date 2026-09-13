@@ -1,9 +1,7 @@
-# Generated from environment/templates/default.json — do not hand-edit.
+# Generated from environment/templates/python.json — do not hand-edit.
 # one domain per line, '#' = comment. '*.example.com' matches subdomains only.
 github.com
 *.githubusercontent.com
-registry.npmjs.org
-*.npmjs.org
 files.pythonhosted.org
 *.pypi.org
 api.anthropic.com

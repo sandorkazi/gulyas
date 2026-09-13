@@ -64,10 +64,16 @@ echo "OK: $("$ROOT/.venv/bin/python" --version 2>&1) @ $ROOT/.venv"
 
 # --- install user-level configs via symlink (never copy: repo stays source of truth) ---
 mkdir -p "$HOME/.config/firejail" "$HOME/.config/herdr-web-proxy" "$HOME/.local/state/herdr-web-proxy"
-ln -sf "$ROOT/environment/firejail/herdr-agent.profile" "$HOME/.config/firejail/herdr-agent.profile"
-ln -sf "$ROOT/environment/firejail/herdr-netfilter.net" "$HOME/.config/firejail/herdr-netfilter.net"
-ln -sf "$ROOT/environment/proxy/config/allowlist.txt" "$HOME/.config/herdr-web-proxy/allowlist.txt"
-echo "OK: linked firejail profile + netfilter + allowlist"
+# Re-render derived firejail/proxy files from env templates, then link them all
+# (default alias keeps the historic unsuffixed filenames for back-compat).
+python3 "$ROOT/environment/scripts/env-setup" --render-all
+for f in "$ROOT"/environment/firejail/*.profile "$ROOT"/environment/firejail/*.net; do
+  ln -sf "$f" "$HOME/.config/firejail/$(basename "$f")"
+done
+for f in "$ROOT"/environment/proxy/config/allowlist*.txt; do
+  ln -sf "$f" "$HOME/.config/herdr-web-proxy/$(basename "$f")"
+done
+echo "OK: linked firejail profiles + netfilters + allowlists ($(ls "$ROOT"/environment/templates/*.json | wc -l) template(s))"
 
 if [[ "$MODE" == "smoke" ]]; then
   echo "-- running proxy unit tests"
@@ -79,5 +85,5 @@ cat <<EOF
 next:
   1) .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 &
   2) herdr worktree create --branch feat/my-task --no-focus   # where herdr lives
-  3) bash environment/scripts/herdr-agent-firejail --worktree <WT> --kind claude --budget-id <id> --budget-max 200 -- claude
+  3) bash environment/scripts/herdr-agent-firejail --template default --worktree <WT> --budget-id <id> --budget-max 200 -- claude
 EOF
