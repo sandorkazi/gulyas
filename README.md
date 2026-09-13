@@ -85,5 +85,4 @@ gulyas/
 
 ## License
 
-TBD — add a `LICENSE` file before publishing (e.g. MIT/Apache-2.0) and replace
-this section.
+This project is released into the public domain under [The Unlicense](https://unlicense.org) — see [`LICENSE`](LICENSE).
