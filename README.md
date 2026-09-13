@@ -1,12 +1,21 @@
 # gulyas
 
-Parallel-agent sandbox for a single repo: one Herdr worktree workspace per task,
-each agent jailed with Firejail, web access limited to an agreed domain
-allowlist with a per-task request budget.
+Sandboxed parallel coding agents on a single repo: run one task per isolated
+checkout, each agent jailed to its own files and an agreed web allowlist with
+a per-task request budget.
 
-Herdr itself is a terminal multiplexer, not a sandbox — it gives each task an
-isolated checkout, and the tooling in this repo confines what the agent inside
-that checkout can touch (filesystem) and reach (network).
+Two halves, each replaceable:
+
+1. **[Herdr](https://herdr.dev) for orchestration** — a terminal multiplexer
+   that keeps one agent per pane with `working/blocked/done` status. Here it
+   provides the isolation unit: one git worktree = one grouped Herdr workspace
+   (`herdr worktree create --branch <name>`), so parallel tasks don't share
+   files or branches. Herdr is not a sandbox — confinement below is separate.
+2. **Everything else in this repo for confinement** —
+   [Firejail](https://firejail.wordpress.com/) filesystem + network jail,
+   a stdlib-only localhost egress proxy (domain allowlist + request budget +
+   audit log), agent permission configs (`deny` outside the worktree,
+   `WebFetch` allowlist), and Docker as an alternative proxy runtime.
 
 ## How it works
 
