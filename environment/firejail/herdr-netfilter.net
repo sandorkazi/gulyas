@@ -1,0 +1,13 @@
+# herdr-netfilter.net — iptables-restore format for `firejail --netfilter=...`.
+# Policy: block all direct egress, allow only loopback proxy :8888 + DNS.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT DROP [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+-A OUTPUT -d 127.0.0.1 -p tcp --dport 8888 -j ACCEPT
+-A OUTPUT -p udp --dport 53 -j ACCEPT
+-A OUTPUT -p tcp --dport 53 -j ACCEPT
+COMMIT

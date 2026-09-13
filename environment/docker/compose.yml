@@ -1,0 +1,17 @@
+# Compose alternative for the proxy (host-network so Firejail lo rule still applies).
+# Default remains host .venv (see environment/README.md). Use this only if you
+# explicitly want the proxy containerized.
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.proxy
+    network_mode: host
+    volumes:
+      - proxy-state:/state
+      - ../proxy/config/allowlist.txt:/app/allowlist.txt:ro
+    environment:
+      BUDGET_MAX: "200"
+
+volumes:
+  proxy-state:

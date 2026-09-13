@@ -1,0 +1,2 @@
+# Runtime deps: proxy itself is stdlib-only. This file is for dev/test tooling.
+pytest>=8

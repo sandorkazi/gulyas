@@ -1,0 +1,9 @@
+# Agreed web allowlist — one domain per line, '#' = comment.
+# '*.example.com' matches subdomains (not the bare domain).
+github.com
+*.githubusercontent.com
+registry.npmjs.org
+*.npmjs.org
+files.pythonhosted.org
+*.pypi.org
+api.anthropic.com

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# herdr-agent-firejail — launch an agent CLI inside Firejail, wired to the allowlist proxy.
+# Usage: herdr-agent-firejail --worktree PATH --kind claude --budget-id w-feat-auth --budget-max 200 -- claude [args...]
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKTREE=""; KIND="claude"; BUDGET_ID="default"; BUDGET_MAX="200"
+while [[ $# -gt 0 ]]; do case "$1" in
+  --worktree) WORKTREE="$2"; shift 2;;
+  --kind) KIND="$2"; shift 2;;
+  --budget-id) BUDGET_ID="$2"; shift 2;;
+  --budget-max) BUDGET_MAX="$2"; shift 2;;
+  --) shift; break;;
+  *) echo "bad arg $1" >&2; exit 2;;
+esac; done
+if [[ -z "$WORKTREE" ]]; then echo "--worktree PATH required" >&2; exit 2; fi
+if [[ $# -eq 0 ]]; then echo "agent command required after --" >&2; exit 2; fi
+PROFILE="${FIREJAIL_PROFILE:-$HOME/.config/firejail/herdr-agent.profile}"
+NETFILTER="${FIREJAIL_NETFILTER:-$HOME/.config/firejail/herdr-netfilter.net}"
+# Fall back to repo copies if not installed yet (dev mode)
+[[ -f "$PROFILE" ]] || PROFILE="$REPO_ROOT/environment/firejail/herdr-agent.profile"
+[[ -f "$NETFILTER" ]] || NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter.net"
+exec firejail \
+  --profile="$PROFILE" \
+  --name="herdr-$(basename "$WORKTREE")-$$" \
+  --whitelist="$WORKTREE" \
+  --netfilter="$NETFILTER" \
+  --env=HERDR_AGENT="$KIND" \
+  --env=HERDR_WORKTREE="$WORKTREE" \
+  --env=BUDGET_ID="$BUDGET_ID" \
+  --env=BUDGET_MAX="$BUDGET_MAX" \
+  --env=http_proxy=http://127.0.0.1:8888 \
+  --env=https_proxy=http://127.0.0.1:8888 \
+  --env=HTTP_PROXY=http://127.0.0.1:8888 \
+  --env=HTTPS_PROXY=http://127.0.0.1:8888 \
+  --env=NO_PROXY=localhost,127.0.0.1 \
+  "$@"
