@@ -53,7 +53,15 @@ Herdr detection still works because the wrapper stays host-visible; set
 
 ## 3. Filesystem policy
 
-Base profile `~/.config/firejail/herdr-agent.profile` (extends `noprofile`):
+Base profile `~/.config/firejail/herdr-agent.profile` (extends `noprofile`).
+
+> Source of truth: `environment/templates/<alias>.json`, managed through the
+> `environment/scripts/env-setup` interview (alias + strictness preset +
+> per-flag drill-down). The checked-in `.profile` / `.net` / `allowlist.txt`
+> files are **generated** from the template — never hand-edit them; re-render
+> with `env-setup` (choose `render`) or `env-setup --render-all`. `init.sh`
+> re-renders and symlinks every template's artifacts. The block below is what
+> the `default` template renders.
 
 ```ini
 noprofile
@@ -127,7 +135,9 @@ COMMIT
 
 Proxy `~/bin/herdr-web-proxy` (localhost:8888):
 
-* `~/.config/herdr-web-proxy/allowlist.txt` — one domain per line:
+* `~/.config/herdr-web-proxy/allowlist.txt` — one domain per line
+  (generated from the template's `network.allowlist`; per-template files are
+  `allowlist-<alias>.txt`):
   ```text
   github.com
   *.githubusercontent.com
@@ -157,7 +167,11 @@ Wrapper `~/bin/herdr-agent-firejail` (sketch):
 
 ```bash
 #!/usr/bin/env bash
-# usage: herdr-agent-firejail --worktree PATH --kind claude --budget-id w2 --budget-max 200 -- <agent args...>
+# usage: herdr-agent-firejail [--template ALIAS] --worktree PATH [--kind claude] [--budget-id w2] [--budget-max 200] -- <agent args...>
+# --template picks environment/templates/<alias>.json (default: default);
+# explicit --kind/--budget-max/--proxy-port override the template defaults.
+# --list-templates / --show-template inspect the resolved profile, netfilter,
+# allowlist, and proxy command without launching anything.
 set -euo pipefail
 WORKTREE=""; KIND="claude"; BUDGET_ID="default"; BUDGET_MAX="200"
 while [[ $# -gt 0 ]]; do case "$1" in
@@ -188,7 +202,7 @@ Start agent in a Herdr pane (keeps detection via `HERDR_AGENT`):
 
 ```bash
 WORKTREE="$(pwd)"
-herdr-agent-firejail --worktree "$WORKTREE" --kind claude --budget-id w-feat-auth --budget-max 200 -- claude
+herdr-agent-firejail --template default --worktree "$WORKTREE" --budget-id w-feat-auth --budget-max 200 -- claude
 ```
 
 Cleanup: `herdr worktree remove --workspace <child-id>` (runs `git worktree
@@ -218,8 +232,12 @@ remove`, keeps branch). Reset proxy counter per task when done.
 ## 8. Build checklist
 
 - [ ] `herdr` installed, `[worktrees] directory` set, test `worktree create/list/remove`.
-- [ ] `herdr-agent.profile` + `herdr-netfilter.net` installed.
-- [ ] `herdr-web-proxy` + `allowlist.txt` + `BUDGET_MAX` agreed, `N1–N3/B1` passing.
-- [ ] `herdr-agent-firejail` wrapper executable, `H1` detection passing.
+- [ ] Env template(s) defined via `bash environment/scripts/env-setup`
+  (alias + Firejail drill-down); rendered profile/netfilter/allowlist installed
+  (`init.sh` re-renders and links all of them).
+- [ ] `herdr-web-proxy` + template `network.allowlist` + `budget_max_default`
+  agreed, `N1–N3/B1` passing.
+- [ ] `herdr-agent-firejail` wrapper executable, `--template <alias>
+  --show-template` resolves the right files, `H1` detection passing.
 - [ ] Repo `.claude/settings.json` + `AGENTS.md` scope block committed; worktree-setup plugin copies them.
 - [ ] `F1–F3/P1` passing with 2 concurrent worktrees.

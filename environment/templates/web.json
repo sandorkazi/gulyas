@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "alias": "web",
+  "description": "Research-heavy runs: broad docs/registry allowlist, budget 1000, standard jail.",
+  "filesystem": {
+    "strictness": "standard",
+    "noroot": true,
+    "nonewprivs": true,
+    "seccomp": true,
+    "private_tmp": true,
+    "private_dev": true,
+    "disable_mnt": true,
+    "nox11": true,
+    "nodbus": true,
+    "restrict_namespaces": true,
+    "memory_deny_write_execute": true,
+    "private_etc": ["passwd", "group", "hostname", "hosts", "resolv.conf", "ssl", "ca-certificates", "crypto-policies", "pki", "nsswitch.conf"],
+    "read_only_toolchain": ["/usr", "/bin"],
+    "read_only_dirs": ["${HOME}/.config/herdr"],
+    "writable_caches": ["${HOME}/.cache", "${HOME}/.npm", "${HOME}/go/pkg/mod"],
+    "blacklist": ["${HOME}/.ssh", "${HOME}/.gnupg", "${HOME}/.aws", "${HOME}/.config/gh", "${HOME}/.config/herdr"],
+    "noblacklist": ["${HOME}/.herdr/worktrees"],
+    "allowed_tools": []
+  },
+  "network": {
+    "proxy_port": 8888,
+    "allowlist": [
+      "github.com",
+      "*.githubusercontent.com",
+      "registry.npmjs.org",
+      "*.npmjs.org",
+      "files.pythonhosted.org",
+      "*.pypi.org",
+      "api.anthropic.com",
+      "stackoverflow.com",
+      "*.stackexchange.com",
+      "docs.python.org",
+      "developer.mozilla.org",
+      "crates.io",
+      "*.crates.io",
+      "proxy.golang.org",
+      "pkg.go.dev"
+    ],
+    "budget_max_default": 1000,
+    "allow_dns": true,
+    "direct_egress": false
+  },
+  "agent": {
+    "default_kind": "claude",
+    "deny_outside_worktree": true
+  }
+}

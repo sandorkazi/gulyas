@@ -1,4 +1,4 @@
-# Generated from environment/templates/default.json — do not hand-edit.
+# Generated from environment/templates/node.json — do not hand-edit.
 # Re-render with: bash environment/scripts/env-setup (choose render) or --render-all
 noprofile
 noroot
@@ -29,6 +29,8 @@ whitelist /usr
 whitelist /bin
 whitelist ${HOME}/.cache
 whitelist ${HOME}/.npm
+whitelist ${HOME}/.local/share/pnpm
+whitelist ${HOME}/.bun
 whitelist ${HOME}/go/pkg/mod
 read-only ${HOME}/go/pkg/mod
 memory-deny-write-execute

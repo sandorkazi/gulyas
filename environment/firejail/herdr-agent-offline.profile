@@ -1,4 +1,4 @@
-# Generated from environment/templates/default.json — do not hand-edit.
+# Generated from environment/templates/offline.json — do not hand-edit.
 # Re-render with: bash environment/scripts/env-setup (choose render) or --render-all
 noprofile
 noroot

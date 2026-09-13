@@ -1,0 +1,2 @@
+# Generated from environment/templates/offline.json — do not hand-edit.
+# one domain per line, '#' = comment. '*.example.com' matches subdomains only.

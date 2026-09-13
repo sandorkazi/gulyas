@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""env-setup — interactive setup guide for agent environment templates.
+
+An env template outlines the Firejail jail + proxy policy for one class of
+agent runs. This interview creates or edits templates; each template gets an
+alias used later with::
+
+    bash environment/scripts/herdr-agent-firejail --template <alias> --worktree <WT> -- <agent>
+
+Templates: environment/templates/<alias>.json (source of truth).
+Rendered : environment/firejail/herdr-agent[-<alias>].profile,
+           environment/firejail/herdr-netfilter[-<alias>].net,
+           environment/proxy/config/allowlist[-<alias>].txt (re-render: --render-all)
+
+Usage:
+    bash environment/scripts/env-setup            # interview (starts with existing templates)
+    bash environment/scripts/env-setup --list     # list templates, no changes
+    bash environment/scripts/env-setup --show <alias>
+    bash environment/scripts/env-setup --render-all   # re-render derived files
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib_env_template import (  # noqa: E402
+    artifact_paths,
+    is_valid_alias,
+    list_templates,
+    load_template,
+    template_path,
+    templates_dir,
+    validate_template,
+    write_artifacts,
+)
+
+STRICTNESS_HELP = {
+    "minimal": "noroot+nonewprivs, private-dev, secrets blacklisted. No seccomp/private-tmp (fast, loose).",
+    "standard": "current default: + seccomp, private-tmp, disable-mnt, restrict-namespaces (recommended).",
+    "strict": "standard + extra secret blacklists, fewer writable caches (paranoid).",
+    "custom": "pick every Firejail flag by hand.",
+}
+
+STRICT_PRESETS = {
+    "minimal": {
+        "noroot": True, "nonewprivs": True, "seccomp": False,
+        "private_tmp": False, "private_dev": True, "disable_mnt": False,
+        "nox11": True, "nodbus": True, "restrict_namespaces": False,
+        "memory_deny_write_execute": False,
+    },
+    "standard": {
+        "noroot": True, "nonewprivs": True, "seccomp": True,
+        "private_tmp": True, "private_dev": True, "disable_mnt": True,
+        "nox11": True, "nodbus": True, "restrict_namespaces": True,
+        "memory_deny_write_execute": True,
+    },
+    "strict": {
+        "noroot": True, "nonewprivs": True, "seccomp": True,
+        "private_tmp": True, "private_dev": True, "disable_mnt": True,
+        "nox11": True, "nodbus": True, "restrict_namespaces": True,
+        "memory_deny_write_execute": True,
+    },
+}
+
+SECRET_SUGGESTIONS = [
+    "${HOME}/.ssh",
+    "${HOME}/.gnupg",
+    "${HOME}/.aws",
+    "${HOME}/.config/gh",
+    "${HOME}/.config/herdr",
+    "${HOME}/.pki",
+    "${HOME}/.docker",
+    "${HOME}/.git-credentials",
+]
+
+CACHE_SUGGESTIONS = [
+    "${HOME}/.cache",
+    "${HOME}/.npm",
+    "${HOME}/go/pkg/mod",
+    "${HOME}/.cargo",
+    "${HOME}/.local/share/pnpm",
+]
+
+
+# -- small prompt helpers ----------------------------------------------------
+def ask(prompt: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        val = input(f"{prompt}{suffix}: ").strip()
+    except EOFError:
+        print()
+        raise SystemExit(130)
+    return val if val else default
+
+
+def ask_yes_no(prompt: str, default: bool) -> bool:
+    hint = "Y/n" if default else "y/N"
+    while True:
+        val = ask(f"{prompt} ({hint})", "")
+        if not val:
+            return default
+        if val.lower() in ("y", "yes"):
+            return True
+        if val.lower() in ("n", "no"):
+            return False
+        print("  please answer y or n.")
+
+
+def ask_int(prompt: str, default: int, lo: int, hi: int) -> int:
+    while True:
+        val = ask(prompt, str(default))
+        try:
+            n = int(val)
+            if lo <= n <= hi:
+                return n
+            print(f"  must be {lo}..{hi}.")
+        except ValueError:
+            print("  must be a number.")
+
+
+def ask_list(prompt: str, default: list[str]) -> list[str]:
+    print(f"  current: {', '.join(default) if default else '(empty)'}")
+    val = ask(f"{prompt} (comma-separated, empty keeps)", "")
+    if not val:
+        return default
+    return [x.strip() for x in val.split(",") if x.strip()]
+
+
+def blank() -> dict:
+    return {
+        "version": 1,
+        "alias": "",
+        "description": "",
+        "filesystem": {
+            "strictness": "standard",
+            "noroot": True, "nonewprivs": True, "seccomp": True,
+            "private_tmp": True, "private_dev": True, "disable_mnt": True,
+            "nox11": True, "nodbus": True, "restrict_namespaces": True,
+            "memory_deny_write_execute": True,
+            "private_etc": ["passwd", "group", "hostname", "hosts", "resolv.conf",
+                            "ssl", "ca-certificates", "crypto-policies", "pki", "nsswitch.conf"],
+            "read_only_toolchain": ["/usr", "/bin"],
+            "read_only_dirs": ["${HOME}/.config/herdr", "${HOME}/go/pkg/mod"],
+            "writable_caches": ["${HOME}/.cache", "${HOME}/.npm", "${HOME}/go/pkg/mod"],
+            "blacklist": ["${HOME}/.ssh", "${HOME}/.gnupg", "${HOME}/.aws",
+                          "${HOME}/.config/gh", "${HOME}/.config/herdr"],
+            "noblacklist": ["${HOME}/.herdr/worktrees"],
+            "allowed_tools": [],
+        },
+        "network": {
+            "proxy_port": 8888,
+            "allowlist": ["github.com", "*.githubusercontent.com",
+                          "registry.npmjs.org", "api.anthropic.com"],
+            "budget_max_default": 200,
+            "allow_dns": True,
+            "direct_egress": False,
+        },
+        "agent": {"default_kind": "claude", "deny_outside_worktree": True},
+    }
+
+
+# -- interview sections ------------------------------------------------------
+def section_filesystem(t: dict) -> None:
+    fs = t["filesystem"]
+    print("\n-- Filesystem jail (Firejail profile) --")
+    for name in ("minimal", "standard", "strict", "custom"):
+        print(f"  {name:8}  {STRICTNESS_HELP[name]}")
+    while True:
+        s = ask("strictness preset", fs.get("strictness", "standard")).lower()
+        if s in STRICTNESS_HELP:
+            fs["strictness"] = s
+            break
+        print("  choose minimal|standard|strict|custom.")
+    if fs["strictness"] in STRICT_PRESETS:
+        fs.update(copy.deepcopy(STRICT_PRESETS[fs["strictness"]]))
+        if fs["strictness"] == "strict":
+            for extra in ("${HOME}/.pki", "${HOME}/.docker", "${HOME}/.git-credentials"):
+                if extra not in fs["blacklist"]:
+                    fs["blacklist"].append(extra)
+            fs["writable_caches"] = [c for c in fs["writable_caches"] if c != "${HOME}/.cache"]
+            if "${HOME}/.npm" not in fs["writable_caches"]:
+                fs["writable_caches"].append("${HOME}/.npm")
+        print(f"  applied '{fs['strictness']}' preset. Fine-tune below (Enter keeps).")
+    else:
+        print("  custom: answer each Firejail flag (Enter keeps current).")
+    fs["noroot"] = ask_yes_no("noroot (no root uid inside jail)?", fs["noroot"])
+    fs["nonewprivs"] = ask_yes_no("nonewprivs (block setuid escalation)?", fs["nonewprivs"])
+    fs["seccomp"] = ask_yes_no("seccomp syscall filter?", fs["seccomp"])
+    fs["private_tmp"] = ask_yes_no("private-tmp (isolated /tmp per agent)?", fs["private_tmp"])
+    fs["private_dev"] = ask_yes_no("private-dev (minimal /dev)?", fs["private_dev"])
+    fs["disable_mnt"] = ask_yes_no("disable-mnt (no mounts)?", fs["disable_mnt"])
+    fs["nox11"] = ask_yes_no("nox11 (no X11 sockets)?", fs["nox11"])
+    fs["nodbus"] = ask_yes_no("block D-Bus (user+system none)?", fs["nodbus"])
+    fs["restrict_namespaces"] = ask_yes_no("restrict-namespaces?", fs["restrict_namespaces"])
+    fs["memory_deny_write_execute"] = ask_yes_no("memory-deny-write-execute?", fs["memory_deny_write_execute"])
+    print("  Secrets: paths the agent must NEVER read (firejail blacklist).")
+    print(f"  suggestions: {', '.join(SECRET_SUGGESTIONS)}")
+    fs["blacklist"] = ask_list("blacklisted secret paths", fs["blacklist"])
+    print("  Caches: writable dirs so package managers don't re-download the world.")
+    print(f"  suggestions: {', '.join(CACHE_SUGGESTIONS)}")
+    fs["writable_caches"] = ask_list("writable cache dirs", fs["writable_caches"])
+    fs["read_only_toolchain"] = ask_list("read-only toolchain dirs", fs["read_only_toolchain"])
+    print("  Tool gate: restrict the jail to named binaries only (firejail private-bin).")
+    print("  Empty = all host tools visible (no restriction). Bare basenames, e.g. bash,git,python3.")
+    fs["allowed_tools"] = ask_list("allowed tools", fs.get("allowed_tools", []))
+    etc = ask("private-etc file list (comma-separated)", ",".join(fs.get("private_etc", [])))
+    fs["private_etc"] = [x.strip() for x in etc.split(",") if x.strip()]
+
+
+def section_network(t: dict) -> None:
+    net = t["network"]
+    print("\n-- Network (netfilter + allowlist proxy) --")
+    print("  Direct egress is ALWAYS dropped; the only way out is the localhost proxy.")
+    net["proxy_port"] = ask_int("proxy port on 127.0.0.1", net.get("proxy_port", 8888), 1, 65535)
+    net["allowlist"] = ask_list("allowed domains ('*.ex.com' = subdomains only)", net.get("allowlist", []))
+    net["budget_max_default"] = ask_int("default request budget per task", net.get("budget_max_default", 200), 1, 100000)
+    net["allow_dns"] = ask_yes_no("allow DNS (udp/tcp :53) for proxy resolution?", net.get("allow_dns", True))
+    net["direct_egress"] = False
+
+
+def section_agent(t: dict) -> None:
+    ag = t["agent"]
+    print("\n-- Agent defaults --")
+    ag["default_kind"] = ask("default agent kind (claude/codex/opencode/...)", ag.get("default_kind", "claude"))
+    ag["deny_outside_worktree"] = ask_yes_no("agent-level deny outside worktree (defense in depth)?",
+                                             ag.get("deny_outside_worktree", True))
+
+
+def summarize(t: dict) -> None:
+    fs, net = t["filesystem"], t["network"]
+    print("\n== template summary ==")
+    print(f"  alias:       {t['alias']}")
+    print(f"  description: {t.get('description', '')}")
+    print(f"  fs: strictness={fs['strictness']} seccomp={fs['seccomp']} "
+          f"private-tmp={fs['private_tmp']} blacklist={len(fs['blacklist'])} paths")
+    print(f"  net: port={net['proxy_port']} domains={len(net['allowlist'])} "
+          f"budget={net['budget_max_default']} dns={net['allow_dns']}")
+    print(f"  agent: kind={t['agent'].get('default_kind')}")
+    print(f"  domains: {', '.join(net['allowlist'])}")
+
+
+# -- top-level flows ---------------------------------------------------------
+def pick_alias(prompt: str, must_exist: bool) -> str:
+    existing = list_templates()
+    while True:
+        alias = ask(prompt, "").strip()
+        if must_exist and alias not in existing:
+            print(f"  unknown template. Existing: {', '.join(existing) or '(none)'}")
+            continue
+        if not must_exist and not is_valid_alias(alias):
+            print("  alias must match [a-z0-9][a-z0-9-_]{0,63}.")
+            continue
+        if not must_exist and alias in existing:
+            print("  alias already exists — choose edit/clone or another name.")
+            continue
+        return alias
+
+
+def save_template(t: dict) -> None:
+    errors = validate_template(t)
+    if errors:
+        print("ERROR: invalid template:")
+        for e in errors:
+            print(f"  - {e}")
+        raise SystemExit(1)
+    templates_dir().mkdir(parents=True, exist_ok=True)
+    template_path(t["alias"]).write_text(json.dumps(t, indent=2) + "\n")
+    paths = write_artifacts(t)
+    print(f"\nsaved environment/templates/{t['alias']}.json")
+    for kind, p in paths.items():
+        print(f"  rendered {kind}: {p.relative_to(Path.cwd()) if p.is_relative_to(Path.cwd()) else p}")
+
+
+def interview_new(clone_from: str | None = None) -> None:
+    t = load_template(clone_from) if clone_from else blank()
+    if clone_from:
+        t = copy.deepcopy(t)
+        print(f"cloning '{clone_from}' — pick a new alias.")
+    else:
+        print("new template — pick an alias first (used as --template <alias>).")
+    t["alias"] = pick_alias("alias", must_exist=False)
+    t["description"] = ask("one-line description", t.get("description", ""))
+    section_filesystem(t)
+    section_network(t)
+    section_agent(t)
+    summarize(t)
+    if ask_yes_no("save this template?", True):
+        save_template(t)
+        print(f"\nnext: bash environment/scripts/herdr-agent-firejail --template {t['alias']} "
+              "--worktree <WT> --budget-id <id> -- <agent>")
+    else:
+        print("discarded.")
+
+
+def interview_edit(alias: str) -> None:
+    t = load_template(alias)
+    print(f"editing '{alias}' (Enter keeps every current value).")
+    t["description"] = ask("one-line description", t.get("description", ""))
+    section_filesystem(t)
+    section_network(t)
+    section_agent(t)
+    summarize(t)
+    if ask_yes_no("save changes?", True):
+        save_template(t)
+    else:
+        print("discarded.")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Interactive setup guide for agent environment templates.",
+        epilog="""interview (no flags):
+  1. lists existing templates (alias, description, domains, budget)
+  2. new | edit | clone | render — new/clone asks for the alias first,
+     then drills down: strictness preset -> Firejail flags (noroot,
+     seccomp, private-tmp/dev, secret blacklists, caches, tool gate) -> proxy port,
+     allowlist, budget -> agent kind -> review & save
+  3. saves environment/templates/<alias>.json and renders the Firejail
+     profile, netfilter, and proxy allowlist
+
+run an agent with a template:
+  bash environment/scripts/herdr-agent-firejail --template <alias> \\
+      --worktree <WT> --budget-id <id> -- <agent>""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--list", action="store_true", help="list templates and exit")
+    ap.add_argument("--show", metavar="ALIAS", help="print template JSON and exit")
+    ap.add_argument("--render-all", action="store_true", help="re-render derived files for all templates")
+    args = ap.parse_args(argv)
+
+    if args.list:
+        for a in list_templates():
+            try:
+                t = load_template(a)
+                print(f"{a:20} {t.get('description', '')}")
+            except Exception as e:  # noqa: BLE001
+                print(f"{a:20} ERROR: {e}")
+        return 0
+    if args.show:
+        print(json.dumps(load_template(args.show), indent=2))
+        return 0
+    if args.render_all:
+        aliases = list_templates()
+        if not aliases:
+            print("no templates found.")
+            return 1
+        for a in aliases:
+            write_artifacts(load_template(a))
+            print(f"rendered {a}")
+        return 0
+
+    # --- interactive: ALWAYS start with existing templates ---
+    existing = list_templates()
+    print("== env setup: agent environment templates ==")
+    if existing:
+        print(f"found {len(existing)} template(s):")
+        for a in existing:
+            try:
+                t = load_template(a)
+                n = len(t.get("network", {}).get("allowlist", []))
+                print(f"  - {a}: {t.get('description', '')} "
+                      f"({n} domains, budget {t.get('network', {}).get('budget_max_default')})")
+            except Exception as e:  # noqa: BLE001
+                print(f"  - {a}: ERROR {e}")
+    else:
+        print("no templates yet — you'll create the first one (alias 'default' is recommended).")
+
+    print("\nactions: [new] create | [edit] modify | [clone] copy | [render] re-render | [quit]")
+    while True:
+        action = ask("action", "new" if not existing else "edit").lower()
+        if action in ("new", "create", "n", ""):
+            interview_new()
+            break
+        if action in ("edit", "e"):
+            if not existing:
+                print("  nothing to edit yet — creating instead.")
+                interview_new()
+                break
+            interview_edit(pick_alias("which template to edit?", must_exist=True))
+            break
+        if action in ("clone", "copy", "c"):
+            if not existing:
+                print("  nothing to clone yet — creating instead.")
+                interview_new()
+                break
+            interview_new(clone_from=pick_alias("clone which template?", must_exist=True))
+            break
+        if action in ("render", "r"):
+            for a in existing:
+                write_artifacts(load_template(a))
+                print(f"rendered {a}")
+            break
+        if action in ("quit", "q", "exit"):
+            print("bye.")
+            break
+        print("  choose new|edit|clone|render|quit.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
