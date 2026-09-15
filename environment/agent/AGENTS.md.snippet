@@ -1,0 +1,12 @@
+# AGENTS.md scope snippet — copy into each repo worktree (see provision-worktree).
+#
+# Prompt text is advisory only. Enforcement is Firejail + proxy + agent deny rules.
+
+- Stay inside this worktree (`$HERDR_WORKTREE`). Never read or write outside it:
+  no `../`, no `~/.ssh`, no `~/.gnupg`, no sibling checkouts under `~/.herdr/worktrees`.
+- Network: only the proxy at `$http_proxy` may be used. Never use `--noproxy`,
+  direct `curl`/`wget`, `ssh`, or raw sockets. Keep fetches within the task's
+  allowlist and request budget (`BUDGET_ID`, `BUDGET_MAX`).
+- Do not escalate: no `sudo`, no `mount`, no new namespaces, no D-Bus/X11 tricks.
+- Review `postinstall` / `Makefile` / build scripts before running them — the jail
+  does not protect against malicious code already committed in the repo.

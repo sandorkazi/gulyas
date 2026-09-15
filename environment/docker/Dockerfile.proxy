@@ -1,8 +1,12 @@
 FROM python:3.14-slim
 WORKDIR /app
 COPY proxy/src/herdr_web_proxy.py /app/herdr_web_proxy.py
-COPY proxy/config/allowlist.txt /app/allowlist.txt
-ENV PROXY_PORT=8888 ALLOWLIST=/app/allowlist.txt STATE_DIR=/state BUDGET_MAX=200
+COPY proxy/config/ /app/allowlist.d/
+# Pick per template: ALLOWLIST=/app/allowlist.d/allowlist-<alias>.txt
+# (default template keeps the historic unsuffixed allowlist.txt).
+# PROXY_PORT must match the template's network.proxy_port
+# (default 8888, strict 8889, offline 8890, web 8891, node 8892, python 8893).
+ENV PROXY_PORT=8888 ALLOWLIST=/app/allowlist.d/allowlist.txt STATE_DIR=/state BUDGET_MAX=200
 VOLUME ["/state"]
-EXPOSE 8888
-CMD ["python", "herdr_web_proxy.py"]
+EXPOSE 8888-8893
+CMD ["sh", "-c", "python herdr_web_proxy.py --port \"$PROXY_PORT\" --allowlist \"$ALLOWLIST\" --state-dir \"$STATE_DIR\" --budget-max \"$BUDGET_MAX\""]

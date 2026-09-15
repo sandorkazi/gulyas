@@ -1,6 +1,5 @@
 # Generated from environment/templates/web.json — do not hand-edit.
 # Re-render with: bash environment/scripts/env-setup (choose render) or --render-all
-noprofile
 noroot
 nonewprivs
 seccomp
@@ -15,7 +14,7 @@ dbus-system none
 nogroups
 nosound
 notv
-nox11
+x11 none
 nodvd
 disable-mnt
 read-only ${HOME}/.config/herdr

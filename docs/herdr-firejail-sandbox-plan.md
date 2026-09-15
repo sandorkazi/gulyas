@@ -41,10 +41,10 @@ Each firejail instance:
   whitelist = its worktree path (+ read-only toolchain)
   private-tmp, private-dev, noroot, nonewprivs, seccomp, caps.drop all,
   dbus-user none, dbus-system none
-  netfilter = block direct 80/443, allow only 127.0.0.1:8888 (allowlist proxy)
-  env: http_proxy=http://127.0.0.1:8888 https_proxy=... HERDR_AGENT=<kind> HERDR_WORKTREE=... BUDGET_ID=...
+  netfilter = block direct 80/443, allow only 127.0.0.1:<template-port> (8888-8893, one proxy per template)
+  env: http_proxy=http://<budget-id>@127.0.0.1:<port> https_proxy=... HERDR_AGENT=<kind> HERDR_WORKTREE=... BUDGET_ID=...
 
-Egress proxy (one per host, localhost only):
+Egress proxy (one per template, localhost only):
   allowlist.txt + per-BUDGET_ID counter -> allow / 429 deny + access.log
 ```
 
@@ -53,7 +53,7 @@ Herdr detection still works because the wrapper stays host-visible; set
 
 ## 3. Filesystem policy
 
-Base profile `~/.config/firejail/herdr-agent.profile` (extends `noprofile`).
+Base profile `~/.config/firejail/herdr-agent.profile` (standalone generated profile).
 
 > Source of truth: `environment/templates/<alias>.json`, managed through the
 > `environment/scripts/env-setup` interview (alias + strictness preset +
@@ -64,7 +64,6 @@ Base profile `~/.config/firejail/herdr-agent.profile` (extends `noprofile`).
 > the `default` template renders.
 
 ```ini
-noprofile
 noroot
 nonewprivs
 seccomp
@@ -79,7 +78,7 @@ dbus-system none
 nogroups
 nosound
 notv
-nox11
+x11 none
 nodvd
 disable-mnt
 read-only ${HOME}/.config/herdr
@@ -96,23 +95,39 @@ memory-deny-write-execute
 restrict-namespaces
 ```
 
-Wrapper adds per-instance flags (see §5): `--whitelist="${WORKTREE}"`,
-`--netfilter=...`, `--env=HERDR_AGENT=...`, etc.
+(`noprofile` is a firejail CLI flag, not a profile directive, so generated
+profiles omit it. X11 is disabled with `x11 none`, the profile syntax
+firejail ≥ 0.9.80 accepts.)
 
-Agent-native second layer (defense in depth, committed per repo) —
-`.claude/settings.json`:
+Wrapper adds per-instance flags (see §5): `--blacklist="${HOME}/.herdr/worktrees"`,
+`--noblacklist="${WORKTREE}"`, `--whitelist="${WORKTREE}"`,
+`--netfilter=...`, `--env=HERDR_AGENT=...`, proxy URL with the task's
+`BUDGET_ID` as userinfo, etc. The blacklist blocks sibling worktrees; the
+per-worktree whitelist/noblacklist re-allows only the task's own checkout.
+
+Agent-native second layer (defense in depth, provisioned per worktree) —
+`environment/agent/claude-settings.json` (example):
 
 ```json
 {
   "permissions": {
-    "allow": ["Edit(./**)", "Bash(git *)", "Bash(npm run *)", "Bash(npm test *)"],
+    "allow": ["Edit(./**)", "Bash(git *)", "Bash(npm run *)", "Bash(npm test *)", "WebFetch(domain:github.com)", "WebFetch(domain:api.anthropic.com)"],
+    "ask": ["WebFetch"],
     "deny": ["Read(../**)", "Read(~/.ssh/**)", "Read(./.env*)", "Bash(sudo *)", "Bash(curl *)", "Bash(wget *)"]
   }
 }
 ```
 
-Worktree provisioning must copy this file into each new worktree (Herdr plugin
-`tdi/herdr-worktree-setup` or `arjenblokzijl/herdr-worktree-provisioner`).
+(The shipped `environment/agent/claude-settings.json` allows the full
+default-template domain set; non-listed `WebFetch` domains fall to `ask`,
+and the proxy still 403s anything off the template allowlist.)
+
+plus `environment/agent/AGENTS.md.snippet` (advisory scope block).
+
+Worktree provisioning must copy these files into each new worktree:
+`bash environment/scripts/provision-worktree --worktree <WT>`
+(Herdr plugin `tdi/herdr-worktree-setup` or
+`arjenblokzijl/herdr-worktree-provisioner` can call it).
 
 ## 4. Network policy — allowlist + budget
 
@@ -133,22 +148,33 @@ Firejail netfilter `~/.config/firejail/herdr-netfilter.net`
 COMMIT
 ```
 
-Proxy `~/bin/herdr-web-proxy` (localhost:8888):
+Proxy `herdr-web-proxy` (localhost only; one instance per env template, each on
+its own loopback port — default 8888, strict 8889, offline 8890, web 8891,
+node 8892, python 8893):
 
-* `~/.config/herdr-web-proxy/allowlist.txt` — one domain per line
-  (generated from the template's `network.allowlist`; per-template files are
-  `allowlist-<alias>.txt`):
+* `~/.config/herdr-web-proxy/allowlist[-<alias>].txt` — one domain per line
+  (generated from the template's `network.allowlist`; validated to
+  `example.com` / `*.example.com`, lowercase; bare `*`, schemes, ports and
+  paths are rejected):
   ```text
   github.com
   *.githubusercontent.com
   registry.npmjs.org
   api.anthropic.com
   ```
-* Env per agent: `BUDGET_ID=<workspace-id>`, `BUDGET_MAX=200`.
+* Env per agent: `BUDGET_ID=<workspace-id>`, `BUDGET_MAX=200`. The wrapper
+  encodes `BUDGET_ID` in the proxy-URL userinfo
+  (`http://<budget-id>@127.0.0.1:<port>`), which stock tools forward as
+  `Proxy-Authorization: Basic ...` on every request including `CONNECT`.
+  The proxy decodes that first, then `X-Budget-Id`, then last-seen-per-IP,
+  then its `--budget-id` default — so tasks sharing a template proxy are
+  still accounted separately.
 * Behavior: `CONNECT host:443` / `GET http://host/` → check allowlist →
   check `count[BUDGET_ID] < BUDGET_MAX` → forward or `403 domain-not-allowed` /
   `429 budget-exhausted`. Append JSONL to `~/.local/state/herdr-web-proxy/access.log`.
-* Wrapper exports `http_proxy` / `https_proxy` (upper + lower case).
+  `Proxy-Authorization` is stripped before forwarding upstream.
+* Wrapper exports `http_proxy` / `https_proxy` (upper + lower case) with the
+  encoded userinfo URL.
   Also deny `Bash(curl --noproxy *)` via agent settings since curl could bypass env.
 
 ## 5. Herdr integration — parallel worktrees
@@ -156,14 +182,18 @@ Proxy `~/bin/herdr-web-proxy` (localhost:8888):
 ```bash
 # once
 herdr plugin install tdi/herdr-worktree-setup
-mkdir -p ~/.config/firejail ~/.config/herdr-web-proxy ~/bin
+mkdir -p ~/.config/firejail ~/.config/herdr-web-proxy ~/.local/state/herdr-web-proxy
+./init.sh  # renders all templates + symlinks profiles/netfilters/allowlists
 
 # per task (from main checkout)
 herdr worktree create --branch feat/auth --no-focus
 herdr worktree list --cwd ~/code/myrepo
+bash environment/scripts/provision-worktree --worktree ~/.herdr/worktrees/myrepo/feat-auth
+# one proxy per template you use:
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
 ```
 
-Wrapper `~/bin/herdr-agent-firejail` (sketch):
+Wrapper `environment/scripts/herdr-agent-firejail` (sketch):
 
 ```bash
 #!/usr/bin/env bash
@@ -173,8 +203,11 @@ Wrapper `~/bin/herdr-agent-firejail` (sketch):
 # --list-templates / --show-template inspect the resolved profile, netfilter,
 # allowlist, and proxy command without launching anything.
 set -euo pipefail
-WORKTREE=""; KIND="claude"; BUDGET_ID="default"; BUDGET_MAX="200"
+WORKTREE=""; KIND="claude"; BUDGET_ID="default"; BUDGET_MAX="200"; TEMPLATE="default"; PROXY_PORT=""
 while [[ $# -gt 0 ]]; do case "$1" in
+  --template|--env-template) TEMPLATE="$2"; shift 2;;
+  --proxy-port) PROXY_PORT="$2"; shift 2;;
+  --list-templates|--show-template) echo "(inspect mode)"; shift;;
   --worktree) WORKTREE="$2"; shift 2;;
   --kind) KIND="$2"; shift 2;;
   --budget-id) BUDGET_ID="$2"; shift 2;;
@@ -185,24 +218,33 @@ esac; done
 exec firejail \
   --profile="$HOME/.config/firejail/herdr-agent.profile" \
   --name="herdr-$(basename "$WORKTREE")-$$" \
+  --blacklist="$HOME/.herdr/worktrees" \
+  --noblacklist="$WORKTREE" \
   --whitelist="$WORKTREE" \
   --netfilter="$HOME/.config/firejail/herdr-netfilter.net" \
   --env=HERDR_AGENT="$KIND" \
   --env=HERDR_WORKTREE="$WORKTREE" \
   --env=BUDGET_ID="$BUDGET_ID" \
   --env=BUDGET_MAX="$BUDGET_MAX" \
-  --env=http_proxy=http://127.0.0.1:8888 \
-  --env=https_proxy=http://127.0.0.1:8888 \
-  --env=HTTP_PROXY=http://127.0.0.1:8888 \
-  --env=HTTPS_PROXY=http://127.0.0.1:8888 \
+  --env=http_proxy=http://"$BUDGET_ID"@127.0.0.1:8888 \
+  --env=https_proxy=http://"$BUDGET_ID"@127.0.0.1:8888 \
+  --env=HTTP_PROXY=http://"$BUDGET_ID"@127.0.0.1:8888 \
+  --env=HTTPS_PROXY=http://"$BUDGET_ID"@127.0.0.1:8888 \
+  --env=NO_PROXY=localhost,127.0.0.1 \
   "$@"
+```
+
+(The real wrapper resolves `--template <alias>` to per-template profile /
+netfilter / allowlist / port, URL-encodes `BUDGET_ID` into the proxy URL,
+and supports `--list-templates` / `--show-template`. See
+`environment/scripts/herdr-agent-firejail`.)
 ```
 
 Start agent in a Herdr pane (keeps detection via `HERDR_AGENT`):
 
 ```bash
 WORKTREE="$(pwd)"
-herdr-agent-firejail --template default --worktree "$WORKTREE" --budget-id w-feat-auth --budget-max 200 -- claude
+bash environment/scripts/herdr-agent-firejail --template default --worktree "$WORKTREE" --budget-id w-feat-auth --budget-max 200 -- claude
 ```
 
 Cleanup: `herdr worktree remove --workspace <child-id>` (runs `git worktree
@@ -231,13 +273,17 @@ remove`, keeps branch). Reset proxy counter per task when done.
 
 ## 8. Build checklist
 
-- [ ] `herdr` installed, `[worktrees] directory` set, test `worktree create/list/remove`.
-- [ ] Env template(s) defined via `bash environment/scripts/env-setup`
+- [ ] `herdr` installed, `[worktrees] directory` set, test `worktree create/list/remove`. (manual, host-side)
+- [x] Env template(s) defined via `bash environment/scripts/env-setup`
   (alias + Firejail drill-down); rendered profile/netfilter/allowlist installed
-  (`init.sh` re-renders and links all of them).
-- [ ] `herdr-web-proxy` + template `network.allowlist` + `budget_max_default`
-  agreed, `N1–N3/B1` passing.
-- [ ] `herdr-agent-firejail` wrapper executable, `--template <alias>
-  --show-template` resolves the right files, `H1` detection passing.
-- [ ] Repo `.claude/settings.json` + `AGENTS.md` scope block committed; worktree-setup plugin copies them.
-- [ ] `F1–F3/P1` passing with 2 concurrent worktrees.
+  (`init.sh` re-renders and links all of them). Shipped: default/strict/offline/web/node/python.
+- [x] `herdr-web-proxy` + template `network.allowlist` + `budget_max_default`
+  agreed; per-template ports/allowlists/budgets covered by pytest (live localhost proxy tests).
+  Still verify live `N1–N3/B1` against real domains per template before use.
+- [x] `herdr-agent-firejail` wrapper executable, `--template <alias>
+  --show-template` resolves the right files (covered by pytest).
+  `H1` detection still needs a live Herdr host to verify.
+- [x] `environment/agent/claude-settings.json` + `AGENTS.md.snippet` committed;
+  `scripts/provision-worktree` copies them (wire into worktree-setup plugin).
+- [ ] `F1–F3/P1` live firejail runs with 2 concurrent worktrees (needs user
+  namespaces + real host; container overlayfs cannot whitelist `/usr`).

@@ -2,7 +2,7 @@
 
 Stdlib-only HTTP forward proxy for Firejail-sandboxed Herdr agents.
 
-- Listens on 127.0.0.1:8888 (localhost only).
+- Listens on 127.0.0.1:<port> (localhost only; port comes from the env template).
 - Plain HTTP: client sends `GET http://host/path` to the proxy.
 - HTTPS: client sends `CONNECT host:443`, then tunnels TLS bytes.
 - Each request checks:
@@ -11,18 +11,23 @@ Stdlib-only HTTP forward proxy for Firejail-sandboxed Herdr agents.
 - Denied: 403 domain-not-allowed, 429 budget-exhausted.
 - Every decision appended as JSONL to access.log.
 
-Budget identity: client env BUDGET_ID is conveyed per request. For plain HTTP
-we read the `X-Budget-Id` header if present, else the proxy default
-(--budget-id / $BUDGET_ID). For CONNECT there are no custom headers, so the
-*last seen* X-Budget-Id from that client IP is reused, falling back to the
-default. In practice: one proxy per host, agents set BUDGET_ID env and send
-one plain-HTTP request first, or run one proxy instance per task with
---budget-id fixed (see docker compose / setup.sh).
+Budget identity: the wrapper encodes the task's BUDGET_ID as the userinfo
+part of the proxy URL (`http://<budget-id>@127.0.0.1:<port>`), so stock
+tools (curl, git, pip, npm) send it as `Proxy-Authorization: Basic ...`
+on every request — including CONNECT, which cannot carry custom headers.
+The proxy decodes that first, then falls back to the `X-Budget-Id` header
+(plain HTTP only), then to the last-seen ID from that client IP, then to
+the proxy default (--budget-id / $BUDGET_ID). Run one proxy instance per
+env template (each template has its own loopback port, allowlist and
+budget default); tasks sharing a template are still accounted separately
+via their BUDGET_ID. For strongest isolation run one proxy per task with
+--budget-id fixed.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import http.client
 import json
@@ -31,6 +36,7 @@ import socket
 import socketserver
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -114,6 +120,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         return self.server  # type: ignore[return-value]
 
     def _budget_id(self) -> str:
+        # 1) Proxy-Authorization userinfo (works for GET *and* CONNECT;
+        #    the wrapper puts BUDGET_ID in the proxy URL userinfo part).
+        auth = self.headers.get("Proxy-Authorization", "")
+        if auth.lower().startswith("basic "):
+            try:
+                decoded = base64.b64decode(auth.split(None, 1)[1]).decode("utf-8", "replace")
+                candidate = urllib.parse.unquote(decoded.split(":", 1)[0]).strip()
+                if candidate:
+                    self.proxy.last_budget_by_ip[self.client_address[0]] = candidate
+                    return candidate
+            except Exception:  # noqa: BLE001 — fall through to other sources
+                pass
         hdr = self.headers.get("X-Budget-Id")
         if hdr:
             hdr = hdr.strip()
@@ -136,9 +154,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(body)
         self._log(host=host, decision=reason, budget_id=budget_id, count=count,
                   method=self.command, code=code)
+        self.wfile.write(body)
 
     # -- plain HTTP forwarding -------------------------------------------
     def do_GET(self): return self._forward()
@@ -173,7 +191,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             conn = http.client.HTTPConnection(host, port, timeout=20)
             fwd = {k: v for k, v in self.headers.items()
-                   if k.lower() not in ("proxy-connection", "connection", "x-budget-id")}
+                   if k.lower() not in ("proxy-connection", "proxy-authorization",
+                                        "connection", "x-budget-id")}
             fwd["Connection"] = "close"
             conn.request(self.command, origin, body=body, headers=fwd)
             resp = conn.getresponse()
@@ -186,9 +205,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(data)
             self._log(host=host, decision="allow", budget_id=budget_id,
                       count=count, method=self.command, code=resp.status)
+            self.wfile.write(data)
         except Exception as e:  # noqa: BLE001
             self._deny(502, f"upstream-error: {e}", host, budget_id, count)
 

@@ -1,6 +1,9 @@
 # Compose alternative for the proxy (host-network so Firejail lo rule still applies).
 # Default remains host .venv (see environment/README.md). Use this only if you
 # explicitly want the proxy containerized.
+# One proxy per env template: each template has its own loopback port, allowlist
+# and budget default. Override per template, e.g.:
+#   TEMPLATE_SUFFIX=-strict PROXY_PORT=8889 BUDGET_MAX=50 docker compose -f environment/docker/compose.yml up --build
 services:
   proxy:
     build:
@@ -9,9 +12,11 @@ services:
     network_mode: host
     volumes:
       - proxy-state:/state
-      - ../proxy/config/allowlist.txt:/app/allowlist.txt:ro
+      - ../proxy/config:/app/allowlist.d:ro
     environment:
-      BUDGET_MAX: "200"
+      PROXY_PORT: "${PROXY_PORT:-8888}"
+      ALLOWLIST: "/app/allowlist.d/allowlist${TEMPLATE_SUFFIX:-}.txt"
+      BUDGET_MAX: "${BUDGET_MAX:-200}"
 
 volumes:
   proxy-state:

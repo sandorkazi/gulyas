@@ -23,7 +23,7 @@
     "allowed_tools": []
   },
   "network": {
-    "proxy_port": 8888,
+    "proxy_port": 8891,
     "allowlist": [
       "github.com",
       "*.githubusercontent.com",

@@ -23,7 +23,7 @@
     "allowed_tools": ["bash", "sh", "env", "git", "python3", "node", "npm", "ls", "cat", "grep", "sed", "find"]
   },
   "network": {
-    "proxy_port": 8888,
+    "proxy_port": 8889,
     "allowlist": [
       "github.com",
       "api.anthropic.com"

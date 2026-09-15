@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(./**)",
+      "Write(./**)",
+      "Read(./**)",
+      "Bash(git *)",
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(npx *)",
+      "Bash(python3 *)",
+      "Bash(pytest *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:*.githubusercontent.com)",
+      "WebFetch(domain:registry.npmjs.org)",
+      "WebFetch(domain:*.npmjs.org)",
+      "WebFetch(domain:files.pythonhosted.org)",
+      "WebFetch(domain:*.pypi.org)",
+      "WebFetch(domain:api.anthropic.com)"
+    ],
+    "ask": [
+      "WebFetch"
+    ],
+    "deny": [
+      "Read(../**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Read(./.env*)",
+      "Bash(sudo *)",
+      "Bash(curl --noproxy *)",
+      "Bash(wget *)",
+      "Bash(ssh *)"
+    ]
+  }
+}

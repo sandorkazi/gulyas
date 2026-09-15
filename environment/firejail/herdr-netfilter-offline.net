@@ -6,5 +6,5 @@
 -A INPUT -i lo -j ACCEPT
 -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 -A OUTPUT -o lo -j ACCEPT
--A OUTPUT -d 127.0.0.1 -p tcp --dport 8888 -j ACCEPT
+-A OUTPUT -d 127.0.0.1 -p tcp --dport 8890 -j ACCEPT
 COMMIT

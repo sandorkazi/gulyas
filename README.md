@@ -21,15 +21,21 @@ Two halves, each replaceable:
 
 - **Isolation unit:** one git worktree = one Herdr grouped workspace
   (`herdr worktree create --branch <name>`).
-- **Filesystem jail:** `environment/firejail/herdr-agent.profile` + per-worktree
-  `--whitelist`, `noroot`, `nonewprivs`, `seccomp`, no D-Bus/X11, `~/.ssh` and
-  sibling checkouts blocked.
+- **Filesystem jail:** `environment/firejail/herdr-agent[-<alias>].profile` + per-worktree
+  `--whitelist`, sibling `--blacklist` (`~/.herdr/worktrees` blocked, only the
+  task's worktree re-allowed), `noroot`, `nonewprivs`, `seccomp`, no D-Bus/X11
+  (`x11 none`), `~/.ssh` and sibling checkouts blocked.
 - **Network allowlist + budget:** Firejail netfilter DROPs direct egress; the
   only way out is the localhost proxy
   (`environment/proxy/src/herdr_web_proxy.py`, stdlib-only) which checks
-  `environment/proxy/config/allowlist.txt` and a per-task counter, then logs
+  `environment/proxy/config/allowlist[-<alias>].txt` and a per-task counter, then logs
   every decision as JSONL. Denies are `403 domain-not-allowed` /
-  `429 budget-exhausted`.
+  `429 budget-exhausted`. Each env template has its own loopback port
+  (default 8888, strict 8889, offline 8890, web 8891, node 8892, python 8893),
+  so run one proxy instance per template you use. The wrapper encodes the
+  task's `--budget-id` in the proxy URL userinfo, which stock tools forward
+  as `Proxy-Authorization` — the proxy decodes it for per-task accounting on
+  both plain HTTP and `CONNECT`.
 - **Env templates:** one named jail+proxy policy per environment pattern
   (`environment/templates/<alias>.json`, created via the `env-setup`
   interview). The profile, netfilter, and allowlist above are generated from
@@ -41,6 +47,9 @@ Two halves, each replaceable:
 
 Full design: [`docs/herdr-firejail-sandbox-plan.md`](docs/herdr-firejail-sandbox-plan.md).
 Environment details: [`environment/README.md`](environment/README.md).
+Docs index: [`docs/README.md`](docs/README.md) · diagrams: [`docs/architecture.html`](docs/architecture.html) ·
+usage: [`docs/usage-guide.md`](docs/usage-guide.md) · security: [`docs/security-model.md`](docs/security-model.md) ·
+templates: [`docs/template-reference.md`](docs/template-reference.md).
 
 ## Requirements
 
@@ -61,9 +70,11 @@ git clone <this-repo> gulyas && cd gulyas
 ./init.sh                 # creates .venv, installs test deps, links firejail configs
 .venv/bin/pytest environment/proxy/tests -q
 bash environment/scripts/env-setup   # interview: pick/edit an env template (alias) for firejail+proxy policy
-.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 &
+# one proxy per template you use (default example; repeat per alias with its port/allowlist/budget):
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
 # from your repo's main checkout:
 herdr worktree create --branch feat/my-task --no-focus
+bash environment/scripts/provision-worktree --worktree ~/.herdr/worktrees/<repo>/feat-my-task  # agent deny rules + scope
 bash environment/scripts/herdr-agent-firejail --template default --worktree ~/.herdr/worktrees/<repo>/feat-my-task \
   --budget-id feat-my-task --budget-max 200 -- claude
 ```
@@ -79,18 +90,21 @@ gulyas/
   environment/
     README.md                          # host-.venv vs docker decision + usage
     proxy/src/herdr_web_proxy.py       # stdlib-only egress proxy
-    proxy/config/allowlist.txt         # agreed domains (generated from template)
-    proxy/tests/test_proxy.py          # allowlist + budget unit tests
+    proxy/config/allowlist[-<alias>].txt  # agreed domains (generated from template)
+    proxy/tests/test_proxy.py          # allowlist + budget + live proxy tests
     proxy/tests/test_env_template.py # template schema/render/wrapper tests
-    templates/<alias>.json           # env templates: default, strict, offline, web, node, python
-    firejail/herdr-agent.profile     # sandbox profile (generated from template, installed to ~/.config/firejail/)
-    firejail/herdr-netfilter.net     # DROP direct egress, allow lo:8888 + DNS (generated)
-    scripts/herdr-agent-firejail     # launch wrapper (--template ALIAS, sets HERDR_AGENT + proxy env)
+    templates/<alias>.json           # env templates: default (:8888), strict (:8889), offline (:8890), web (:8891), node (:8892), python (:8893)
+    firejail/herdr-agent[-<alias>].profile  # sandbox profile (generated from template, installed to ~/.config/firejail/)
+    firejail/herdr-netfilter[-<alias>].net  # DROP direct egress, allow lo:<port> + DNS (generated)
+    scripts/herdr-agent-firejail     # launch wrapper (--template ALIAS, sets HERDR_AGENT + proxy env + sibling blacklist)
     scripts/env-setup                # interactive interview: create/edit env templates (alias + firejail drill-down)
+    scripts/provision-worktree       # copy agent deny rules + AGENTS.md scope into a new worktree
     scripts/lib_env_template.py      # shared template schema/render logic (stdlib-only)
     scripts/setup.sh                   # delegates to ../../init.sh (back-compat)
-    docker/Dockerfile.proxy            # containerized proxy alternative
-    docker/compose.yml                 # host-network runner for that image
+    agent/claude-settings.json       # agent-native deny rules (defense in depth, provisioned per worktree)
+    agent/AGENTS.md.snippet          # advisory scope block (provisioned per worktree)
+    docker/Dockerfile.proxy            # containerized proxy alternative (per-template allowlist dir + port)
+    docker/compose.yml                 # host-network runner for that image (one service per template)
 ```
 
 ## Limitations & residual risk

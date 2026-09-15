@@ -12,34 +12,46 @@ moving part. Keep host default; container for CI / shared runners.
 
 ```text
 gulyas/
-  .venv/                          # host python env (gitignored), created by setup.sh
+  .venv/                          # host python env (gitignored), created by init.sh (via scripts/setup.sh shim)
   environment/
     README.md                     # this file
     proxy/src/herdr_web_proxy.py  # stdlib-only, no pip deps needed at runtime
-    proxy/config/allowlist.txt    # agreed domains (generated from templates/default.json)
-    proxy/tests/test_proxy.py     # pytest, runs in .venv
+    proxy/config/allowlist[-<alias>].txt  # agreed domains (generated from templates/<alias>.json)
+    proxy/tests/test_proxy.py     # pytest, runs in .venv (allowlist + budget + live proxy)
     proxy/tests/test_env_template.py  # template schema/render/wrapper tests
-    templates/<alias>.json        # env templates: default, strict, offline, web, node, python
-    firejail/herdr-agent.profile  # installed to ~/.config/firejail/ (generated from template)
-    firejail/herdr-netfilter.net  # iptables-restore, referenced by wrapper (generated)
-    scripts/herdr-agent-firejail  # firejail wrapper: --template ALIAS, sets HERDR_AGENT + proxy env
+    templates/<alias>.json        # env templates: default (:8888), strict (:8889), offline (:8890), web (:8891), node (:8892), python (:8893)
+    firejail/herdr-agent[-<alias>].profile  # installed to ~/.config/firejail/ (generated from template)
+    firejail/herdr-netfilter[-<alias>].net  # iptables-restore, referenced by wrapper (generated)
+    scripts/herdr-agent-firejail  # firejail wrapper: --template ALIAS, sets HERDR_AGENT + proxy env + sibling blacklist
     scripts/env-setup             # interactive interview: create/edit env templates
+    scripts/provision-worktree    # copy agent deny rules + AGENTS.md scope into a new worktree
     scripts/lib_env_template.py   # shared template schema + render logic (stdlib-only)
-    scripts/setup.sh              # creates .venv, installs test deps, links configs
-    docker/Dockerfile.proxy       # alternative: same proxy in a container
-    docker/compose.yml            # alternative runner (network_mode: host)
+    scripts/setup.sh              # back-compat shim delegating to ../../init.sh
+    agent/claude-settings.json    # agent-native deny rules (provisioned per worktree)
+    agent/AGENTS.md.snippet       # advisory scope block (provisioned per worktree)
+    docker/Dockerfile.proxy       # alternative: same proxy in a container (per-template)
+    docker/compose.yml            # alternative runner (network_mode: host, one service per template)
 ```
 
 ## Quickstart (host, recommended)
 
 ```bash
-bash environment/scripts/setup.sh
+bash environment/scripts/setup.sh   # shim -> ../../init.sh (canonical bootstrap)
 bash environment/scripts/env-setup   # pick or define an env template (alias)
-.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 &
+# one proxy per template you use (ports/budgets from the template table below):
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8889 --allowlist environment/proxy/config/allowlist-strict.txt --budget-max 50 &
 .venv/bin/pytest environment/proxy/tests -q
+bash environment/scripts/provision-worktree --worktree ~/.herdr/worktrees/myrepo/feat-x
 bash environment/scripts/herdr-agent-firejail --template default --worktree ~/.herdr/worktrees/myrepo/feat-x \
   --budget-id feat-x --budget-max 200 -- claude
 ```
+
+Budget identity: the wrapper encodes `--budget-id` in the proxy URL userinfo,
+so curl/git/pip/npm send it as `Proxy-Authorization: Basic ...` on every
+request (including `CONNECT`). The proxy decodes it first, then `X-Budget-Id`,
+then last-seen-per-IP, then its `--budget-id` default. Tasks sharing one
+template proxy are still accounted separately.
 
 ## Env templates (new environment patterns)
 
@@ -71,17 +83,19 @@ bash environment/scripts/herdr-agent-firejail --template web-strict --worktree <
 
 ### Shipped vanilla templates
 
-| Alias | Use when | Jail | Network |
-| --- | --- | --- | --- |
-| `default` | general coding, the agreed policy | standard | agreed list, budget 200 |
-| `strict` | untrusted / one-shot runs | strict + `private-bin` tool gate (bash, git, python3, node, …), extra secret blacklists, no broad `~/.cache` | github + model API only, budget 50 |
-| `offline` | pure local refactors, zero exfiltration surface | standard | empty allowlist (every fetch 403) + no DNS; budget 50 as backstop |
-| `web` | research-heavy tasks | standard | default list + Stack Overflow, Python/MDN docs, crates.io, Go proxy; budget 1000 |
-| `node` | frontend work | standard + pnpm/bun caches | npm registries + github + model API, budget 300 |
-| `python` | Python work | standard + pip/uv caches | PyPI + github + model API, budget 300 |
+| Alias | Port | Use when | Jail | Network |
+| --- | --- | --- | --- | --- |
+| `default` | 8888 | general coding, the agreed policy | standard | agreed list, budget 200 |
+| `strict` | 8889 | untrusted / one-shot runs | strict + `private-bin` tool gate (bash, git, python3, node, …), extra secret blacklists, no broad `~/.cache` | github + model API only, budget 50 |
+| `offline` | 8890 | pure local refactors, zero exfiltration surface | standard | empty allowlist (every fetch 403) + no DNS; budget 50 as backstop |
+| `web` | 8891 | research-heavy tasks | standard | default list + Stack Overflow, Python/MDN docs, crates.io, Go proxy; budget 1000 |
+| `node` | 8892 | frontend work | standard + pnpm/bun caches | npm registries + github + model API, budget 300 |
+| `python` | 8893 | Python work | standard + pip/uv caches | PyPI + github + model API, budget 300 |
 
-All vanilla templates share proxy port 8888, so one proxy serves every
-concurrent agent regardless of template.
+Each template has its own loopback port, so run one proxy instance per
+template you use (same port/allowlist/budget as the row above). A single
+proxy cannot enforce several templates at once — the allowlist and budget
+default are per proxy instance.
 
 Why Python stays jailable: the wrapper whitelists the whole worktree
 read-write at runtime, so project-local `.venv`s, `pip install`, and editable
@@ -112,8 +126,8 @@ the tool rather than widening the shared one.
 | `filesystem.writable_caches` | `whitelist`ed package-cache dirs (no re-downloads per worktree) |
 | `filesystem.blacklist/noblacklist` | `blacklist`ed secret paths / exempted worktree dir |
 | `filesystem.allowed_tools` | bare basenames → `private-bin` tool gate; empty = unrestricted |
-| `network.proxy_port` | loopback port baked into the netfilter rule + wrapper proxy env (1..65535) |
-| `network.allowlist` | domains → `allowlist[-<alias>].txt`; `*.ex.com` matches subdomains only |
+| `network.proxy_port` | loopback port baked into the netfilter rule + wrapper proxy env (1..65535; vanilla aliases use 8888..8893, one proxy per template) |
+| `network.allowlist` | domains → `allowlist[-<alias>].txt`; `*.ex.com` matches subdomains only; validated to `example.com` / `*.example.com` lowercase (bare `*`, schemes, ports, paths rejected) |
 | `network.budget_max_default` | default `BUDGET_MAX` unless `--budget-max` is passed (positive int) |
 | `network.allow_dns` | whether the netfilter keeps the `:53` rules; direct egress is always dropped |
 | `agent.default_kind` | default `HERDR_AGENT` unless `--kind` is passed |
@@ -134,9 +148,28 @@ template directory (used by tests).
 ## Docker alternative
 
 ```bash
+# default template proxy:
 docker compose -f environment/docker/compose.yml up --build
-# then run wrapper as usual (proxy still on 127.0.0.1:8888 via host network)
+# strict template proxy (port 8889, budget 50):
+TEMPLATE_SUFFIX=-strict PROXY_PORT=8889 BUDGET_MAX=50 docker compose -f environment/docker/compose.yml up --build
+# then run wrapper as usual (proxy still on 127.0.0.1:<port> via host network)
 ```
+
+The image carries the whole `proxy/config/` dir; pick the allowlist with
+`ALLOWLIST=/app/allowlist.d/allowlist[-<alias>].txt` (compose does this from
+`TEMPLATE_SUFFIX`). Run one container per template you use.
+
+## Agent scope (defense in depth)
+
+Firejail + proxy enforce; agent configs add a second layer (advisory to the
+model, enforced by the agent CLI):
+
+- `environment/agent/claude-settings.json` — deny outside-worktree reads,
+  `sudo`, `curl --noproxy`, `wget`, `ssh`; `WebFetch(domain:…)` allowlist
+  (mirrors the default template) with `ask` fallback for other domains.
+- `environment/agent/AGENTS.md.snippet` — scope block for `AGENTS.md`.
+- `bash environment/scripts/provision-worktree --worktree <WT>` copies both
+  into a new worktree (wire it into your Herdr worktree-setup plugin).
 
 ## Notes
 
