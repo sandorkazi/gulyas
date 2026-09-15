@@ -55,6 +55,11 @@ EOF
 [[ "$KIND_SET" == 1 ]] || KIND="$TEMPLATE_KIND"
 [[ "$BUDGET_MAX_SET" == 1 ]] || BUDGET_MAX="$TEMPLATE_BUDGET_MAX"
 [[ "$PROXY_PORT_SET" == 1 ]] || PROXY_PORT="$TEMPLATE_PORT"
+# Encode BUDGET_ID as proxy-URL userinfo so stock tools send it as
+# Proxy-Authorization on every request (incl. CONNECT, which has no custom
+# headers). The proxy decodes it for per-task budget accounting.
+PROXY_USER="$(BUDGET_ID="$BUDGET_ID" python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["BUDGET_ID"], safe=""))')"
+PROXY_URL="http://${PROXY_USER}@127.0.0.1:${PROXY_PORT}"
 
 # Per-template artifact names (must match lib_env_template.artifact_paths).
 if [[ "$TEMPLATE" == "default" ]]; then
@@ -87,8 +92,10 @@ if [[ "$SHOW_TEMPLATE" == 1 ]]; then
   echo "profile:   $PROFILE"
   echo "netfilter: $NETFILTER"
   echo "allowlist: $ALLOWLIST_FILE"
-  echo "kind=$KIND budget_max=$BUDGET_MAX proxy_port=$PROXY_PORT"
-  echo "proxy:     .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port $PROXY_PORT --allowlist $ALLOWLIST_FILE"
+  echo "kind=$KIND budget_id=$BUDGET_ID budget_max=$BUDGET_MAX proxy_port=$PROXY_PORT"
+  echo "proxy_url: $PROXY_URL"
+  echo "proxy:     .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port $PROXY_PORT --allowlist $ALLOWLIST_FILE --budget-max $BUDGET_MAX"
+  echo "sibling isolation: --blacklist=\$HOME/.herdr/worktrees + --whitelist=\$WORKTREE"
   exit 0
 fi
 if [[ -z "$WORKTREE" ]]; then echo "--worktree PATH required" >&2; exit 2; fi
@@ -99,15 +106,17 @@ if [[ $# -eq 0 ]]; then echo "agent command required after --" >&2; exit 2; fi
 exec firejail \
   --profile="$PROFILE" \
   --name="herdr-$(basename "$WORKTREE")-$$" \
+  --blacklist="$HOME/.herdr/worktrees" \
+  --noblacklist="$WORKTREE" \
   --whitelist="$WORKTREE" \
   --netfilter="$NETFILTER" \
   --env=HERDR_AGENT="$KIND" \
   --env=HERDR_WORKTREE="$WORKTREE" \
   --env=BUDGET_ID="$BUDGET_ID" \
   --env=BUDGET_MAX="$BUDGET_MAX" \
-  --env=http_proxy=http://127.0.0.1:"$PROXY_PORT" \
-  --env=https_proxy=http://127.0.0.1:"$PROXY_PORT" \
-  --env=HTTP_PROXY=http://127.0.0.1:"$PROXY_PORT" \
-  --env=HTTPS_PROXY=http://127.0.0.1:"$PROXY_PORT" \
+  --env=http_proxy="$PROXY_URL" \
+  --env=https_proxy="$PROXY_URL" \
+  --env=HTTP_PROXY="$PROXY_URL" \
+  --env=HTTPS_PROXY="$PROXY_URL" \
   --env=NO_PROXY=localhost,127.0.0.1 \
   "$@"

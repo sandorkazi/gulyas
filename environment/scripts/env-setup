@@ -205,6 +205,11 @@ def section_filesystem(t: dict) -> None:
     print(f"  suggestions: {', '.join(CACHE_SUGGESTIONS)}")
     fs["writable_caches"] = ask_list("writable cache dirs", fs["writable_caches"])
     fs["read_only_toolchain"] = ask_list("read-only toolchain dirs", fs["read_only_toolchain"])
+    fs["read_only_dirs"] = ask_list("extra read-only dirs (e.g. ${HOME}/.config/herdr)", fs.get("read_only_dirs", []))
+    print("  Exemptions: paths re-allowed under a blacklist (firejail noblacklist).")
+    print("  Keep '${HOME}/.herdr/worktrees' unless you know the wrapper's")
+    print("  per-worktree --blacklist/--whitelist already isolates siblings.")
+    fs["noblacklist"] = ask_list("noblacklist exemptions", fs.get("noblacklist", []))
     print("  Tool gate: restrict the jail to named binaries only (firejail private-bin).")
     print("  Empty = all host tools visible (no restriction). Bare basenames, e.g. bash,git,python3.")
     fs["allowed_tools"] = ask_list("allowed tools", fs.get("allowed_tools", []))
@@ -268,9 +273,20 @@ def save_template(t: dict) -> None:
         for e in errors:
             print(f"  - {e}")
         raise SystemExit(1)
-    templates_dir().mkdir(parents=True, exist_ok=True)
+    td = templates_dir()
+    td.mkdir(parents=True, exist_ok=True)
     template_path(t["alias"]).write_text(json.dumps(t, indent=2) + "\n")
-    paths = write_artifacts(t)
+    # Test isolation: when GULYAS_TEMPLATES_DIR points at
+    # <root>/environment/templates, render artifacts under <root> so the
+    # real checkout stays clean (pytest uses this).
+    from lib_env_template import DEFAULT_TEMPLATES_DIR
+    repo_root = None
+    if td != DEFAULT_TEMPLATES_DIR and td.name == "templates" \
+            and td.parent.name == "environment":
+        repo_root = td.parent.parent
+        (repo_root / "environment" / "firejail").mkdir(parents=True, exist_ok=True)
+        (repo_root / "environment" / "proxy" / "config").mkdir(parents=True, exist_ok=True)
+    paths = write_artifacts(t, repo_root=repo_root)
     print(f"\nsaved environment/templates/{t['alias']}.json")
     for kind, p in paths.items():
         print(f"  rendered {kind}: {p.relative_to(Path.cwd()) if p.is_relative_to(Path.cwd()) else p}")

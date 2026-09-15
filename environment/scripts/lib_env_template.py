@@ -39,6 +39,30 @@ def is_valid_alias(alias: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9][a-z0-9-_]{0,63}", alias or ""))
 
 
+DOMAIN_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+DOMAIN_RE = re.compile(rf"^{DOMAIN_LABEL}(?:\.{DOMAIN_LABEL})*$")
+WILDCARD_RE = re.compile(rf"^\*\.{DOMAIN_LABEL}(?:\.{DOMAIN_LABEL})*$")
+
+
+def is_valid_domain_pattern(pat: str) -> bool:
+    """Allow `example.com` or `*.example.com` (subdomains only).
+
+    Rejects bare `*`, schemes, ports, paths, whitespace and uppercase
+    (callers should lowercase first; rejection surfaces typos).
+    """
+    if not isinstance(pat, str) or not pat:
+        return False
+    if pat != pat.strip():
+        return False
+    if any(c.isspace() for c in pat):
+        return False
+    if "://" in pat or "/" in pat or ":" in pat or "," in pat:
+        return False
+    if pat == "*" or pat.startswith("*."):
+        return bool(WILDCARD_RE.match(pat.lower())) and pat == pat.lower()
+    return bool(DOMAIN_RE.match(pat)) and pat == pat.lower()
+
+
 def list_templates() -> list[str]:
     d = templates_dir()
     if not d.is_dir():
@@ -85,19 +109,51 @@ def validate_template(t: dict) -> list[str]:
         if not isinstance(port, int) or not (1 <= port <= 65535):
             errors.append("network.proxy_port must be 1..65535")
         allow = net.get("allowlist", [])
-        if not isinstance(allow, list) or not all(isinstance(x, str) and x.strip() for x in allow):
+        if not isinstance(allow, list):
             errors.append("network.allowlist must be a list of non-empty domain strings")
+        else:
+            for dom in allow:
+                if not isinstance(dom, str) or not dom.strip():
+                    errors.append("network.allowlist must be a list of non-empty domain strings")
+                    break
+                if not is_valid_domain_pattern(dom.strip()):
+                    errors.append(
+                        f"network.allowlist has invalid domain pattern: {dom!r} "
+                        "(use example.com or *.example.com, lowercase, no scheme/port/path)")
+                    break
         bmax = net.get("budget_max_default", 200)
-        if not isinstance(bmax, int) or bmax <= 0:
+        if not isinstance(bmax, int) or isinstance(bmax, bool) or bmax <= 0:
             errors.append("network.budget_max_default must be a positive int")
+        if not isinstance(net.get("allow_dns", True), bool):
+            errors.append("network.allow_dns must be a boolean")
+        if net.get("direct_egress", False) not in (False,):
+            errors.append("network.direct_egress must be false (direct egress is always dropped)")
+        ag = t.get("agent", {})
+        if not isinstance(ag, dict):
+            errors.append("agent must be an object")
+        else:
+            kind = ag.get("default_kind", "claude")
+            if not isinstance(kind, str) or not kind.strip():
+                errors.append("agent.default_kind must be a non-empty string")
+            if not isinstance(ag.get("deny_outside_worktree", True), bool):
+                errors.append("agent.deny_outside_worktree must be a boolean")
     strict = (fs or {}).get("strictness", "standard")
     if strict not in ("minimal", "standard", "strict", "custom"):
         errors.append("filesystem.strictness must be minimal|standard|strict|custom")
-    for key in ("blacklist", "writable_caches", "read_only_dirs", "read_only_toolchain",
-                "allowed_tools"):
+    for key in ("blacklist", "noblacklist", "writable_caches", "read_only_dirs",
+                "read_only_toolchain", "allowed_tools"):
         val = (fs or {}).get(key, [])
-        if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
-            errors.append(f"filesystem.{key} must be a list of strings")
+        if not isinstance(val, list) or not all(isinstance(x, str) and x.strip() for x in val):
+            errors.append(f"filesystem.{key} must be a list of non-empty strings")
+    etc = (fs or {}).get("private_etc", [])
+    if not isinstance(etc, list) or not all(isinstance(x, str) and x.strip() for x in etc):
+        errors.append("filesystem.private_etc must be a list of non-empty strings")
+    else:
+        for x in etc:
+            if "/" in x or "\\" in x or any(c.isspace() for c in x):
+                errors.append(
+                    f"filesystem.private_etc has invalid entry: {x!r} (bare filenames expected)")
+                break
     for x in (fs or {}).get("allowed_tools", []):
         if not isinstance(x, str) or not x or "/" in x or any(c.isspace() for c in x):
             errors.append(
@@ -106,10 +162,11 @@ def validate_template(t: dict) -> list[str]:
     return errors
 
 
-def artifact_paths(alias: str) -> dict[str, Path]:
+def artifact_paths(alias: str, repo_root: Path | None = None) -> dict[str, Path]:
     """Derived firejail/proxy artifacts for a template alias (repo-relative)."""
-    firejail = REPO_ROOT / "environment" / "firejail"
-    cfg = REPO_ROOT / "environment" / "proxy" / "config"
+    root = repo_root or REPO_ROOT
+    firejail = root / "environment" / "firejail"
+    cfg = root / "environment" / "proxy" / "config"
     if alias == "default":
         return {
             "profile": firejail / "herdr-agent.profile",
@@ -130,7 +187,6 @@ def render_profile(t: dict) -> str:
     lines = [
         f"# Generated from environment/templates/{alias}.json — do not hand-edit.",
         "# Re-render with: bash environment/scripts/env-setup (choose render) or --render-all",
-        "noprofile",
     ]
     if fs.get("noroot", True):
         lines.append("noroot")
@@ -155,7 +211,7 @@ def render_profile(t: dict) -> str:
     lines.append("nosound")
     lines.append("notv")
     if fs.get("nox11", True):
-        lines.append("nox11")
+        lines.append("x11 none")
     lines.append("nodvd")
     if fs.get("disable_mnt", True):
         lines.append("disable-mnt")
@@ -229,11 +285,11 @@ def render_all(t: dict) -> dict[str, str]:
     }
 
 
-def write_artifacts(t: dict) -> dict[str, Path]:
+def write_artifacts(t: dict, repo_root: Path | None = None) -> dict[str, Path]:
     errors = validate_template(t)
     if errors:
         raise ValueError("invalid template: " + "; ".join(errors))
-    paths = artifact_paths(t["alias"])
+    paths = artifact_paths(t["alias"], repo_root=repo_root)
     rendered = render_all(t)
     paths["profile"].write_text(rendered["profile"])
     paths["netfilter"].write_text(rendered["netfilter"])

@@ -41,10 +41,12 @@ def test_render_profile_covers_firejail_drilldown():
     t = load_template("default")
     out = render_profile(t)
     for directive in ("noroot", "nonewprivs", "seccomp", "private-tmp",
-                      "private-dev", "disable-mnt", "nox11",
+                      "private-dev", "disable-mnt", "x11 none",
                       "dbus-user none", "restrict-namespaces",
                       "blacklist ${HOME}/.ssh", "whitelist /usr"):
         assert directive in out, directive
+    assert "nox11" not in out  # invalid profile syntax (firejail wants `x11 none`)
+    assert "noprofile" not in out  # CLI-only flag, must not appear in profile file
 
 
 def test_render_netfilter_locks_egress_to_proxy():
@@ -85,7 +87,17 @@ def test_offline_template_denies_everything():
     assert t["network"]["allowlist"] == []
     net = render_netfilter(t)
     assert "--dport 53" not in net  # no DNS in-jail
-    assert "--dport 8888" in net  # proxy loopback still reachable
+    assert f"--dport {t['network']['proxy_port']}" in net  # proxy loopback still reachable
+
+
+def test_shipped_templates_have_unique_ports():
+    ports = {}
+    for alias in list_templates():
+        t = load_template(alias)
+        port = t["network"]["proxy_port"]
+        assert port not in ports.values(), f"port {port} shared by {ports} and {alias}"
+        ports[alias] = port
+    assert ports["default"] == 8888
 
 
 def test_all_shipped_templates_render_clean():
@@ -120,6 +132,17 @@ def test_validate_rejects_bad_template():
     t = load_template("default")
     t["filesystem"]["allowed_tools"] = ["/bin/evil"]
     assert any("allowed_tools" in e for e in validate_template(t))
+    for bad in ("*", "*.", "https://evil.com", "evil.com:443", "evil com",
+                "EVIL.COM", "*.", "**.example.com"):
+        t = load_template("default")
+        t["network"]["allowlist"] = [bad]
+        assert any("allowlist" in e for e in validate_template(t)), bad
+    t = load_template("default")
+    t["network"]["direct_egress"] = True
+    assert any("direct_egress" in e for e in validate_template(t))
+    t = load_template("default")
+    t["filesystem"]["noblacklist"] = [""]
+    assert any("noblacklist" in e for e in validate_template(t))
 
 
 def _clean_repo_artifacts(*aliases):
@@ -137,12 +160,14 @@ def test_write_artifacts_roundtrip(tmp_path, monkeypatch):
     src = json.loads((REPO_ROOT / "environment" / "templates" / "default.json").read_text())
     src["alias"] = "tmp-demo"
     (tmp_path / "tmp-demo.json").write_text(json.dumps(src))
-    try:
-        paths = write_artifacts(src)
-        assert paths["profile"].read_text() == render_profile(src)
-        assert paths["netfilter"].read_text() == render_netfilter(src)
-    finally:
-        _clean_repo_artifacts("tmp-demo")
+    # Isolated: render into tmp repo root so the real checkout stays clean.
+    fake_root = tmp_path / "repo"
+    (fake_root / "environment" / "firejail").mkdir(parents=True)
+    (fake_root / "environment" / "proxy" / "config").mkdir(parents=True)
+    paths = write_artifacts(src, repo_root=fake_root)
+    assert paths["profile"].read_text() == render_profile(src)
+    assert paths["netfilter"].read_text() == render_netfilter(src)
+    assert paths["allowlist"].read_text() == render_allowlist(src)
 
 
 def _run(cmd, **kw):
@@ -156,12 +181,30 @@ def test_wrapper_list_and_show_template():
         r = _run(["bash", "environment/scripts/herdr-agent-firejail",
                   "--template", alias, "--show-template"])
         assert r.returncode == 0, alias
+        assert "--budget-max" in r.stdout and "proxy_url:" in r.stdout
     r = _run(["bash", "environment/scripts/herdr-agent-firejail",
               "--template", "default", "--show-template"])
     assert "herdr-agent.profile" in r.stdout and "--port 8888" in r.stdout
     r = _run(["bash", "environment/scripts/herdr-agent-firejail",
+              "--template", "strict", "--show-template"])
+    assert "--port 8889" in r.stdout and "allowlist-strict.txt" in r.stdout
+    r = _run(["bash", "environment/scripts/herdr-agent-firejail",
               "--template", "no-such", "--show-template"])
     assert r.returncode != 0 and "env-setup" in r.stderr
+
+
+def test_wrapper_encodes_budget_and_sibling_blacklist():
+    r = _run(["bash", "-c",
+              "bash environment/scripts/herdr-agent-firejail --template default "
+              "--worktree /tmp/wt-demo --budget-id 'task a/b' --budget-max 7 --show-template"])
+    assert r.returncode == 0
+    assert "task%20a%2Fb@" in r.stdout  # userinfo URL-encoded
+    assert "--blacklist" in r.stdout or "sibling isolation" in r.stdout
+    # dry-run the real firejail argv via bash -x? Instead check script text.
+    text = (REPO_ROOT / "environment" / "scripts" / "herdr-agent-firejail").read_text()
+    assert '--blacklist="$HOME/.herdr/worktrees"' in text
+    assert '--noblacklist="$WORKTREE"' in text
+    assert "PROXY_USER" in text and "PROXY_URL" in text
 
 
 def test_env_setup_lists_existing_templates():
@@ -173,8 +216,11 @@ def test_env_setup_lists_existing_templates():
 
 def test_interview_creates_aliased_template(tmp_path, monkeypatch):
     # Simulate: action=new, alias, description, then Enter-keeps for everything, save=yes.
-    monkeypatch.setenv("GULYAS_TEMPLATES_DIR", str(tmp_path))
-    (tmp_path / "default.json").write_text(
+    # Layout mirrors <root>/environment/templates so artifacts render under tmp (no repo pollution).
+    tdir = tmp_path / "environment" / "templates"
+    tdir.mkdir(parents=True)
+    monkeypatch.setenv("GULYAS_TEMPLATES_DIR", str(tdir))
+    (tdir / "default.json").write_text(
         (REPO_ROOT / "environment" / "templates" / "default.json").read_text())
     answers = "\n".join([
         "new",            # action
@@ -185,6 +231,8 @@ def test_interview_creates_aliased_template(tmp_path, monkeypatch):
         "",               # blacklist keep
         "",               # caches keep
         "",               # toolchain keep
+        "",               # read-only dirs keep
+        "",               # noblacklist keep
         "",               # allowed tools keep (no gate)
         "",               # private-etc keep
         "",               # proxy port keep
@@ -195,17 +243,30 @@ def test_interview_creates_aliased_template(tmp_path, monkeypatch):
         "",               # deny-outside keep
         "y",              # save?
     ]) + "\n"
-    env = {**os.environ, "GULYAS_TEMPLATES_DIR": str(tmp_path)}
-    try:
-        r = subprocess.run([sys.executable, "environment/scripts/env-setup"],
-                           input=answers, capture_output=True, text=True,
-                           cwd=REPO_ROOT, env=env, timeout=60)
-        assert r.returncode == 0, r.stderr
-        created = tmp_path / "web-strict.json"
-        assert created.exists(), r.stdout
-        t = json.loads(created.read_text())
-        assert t["alias"] == "web-strict"
-        # interview must have started with existing templates
-        assert "found 1 template" in r.stdout
-    finally:
-        _clean_repo_artifacts("web-strict")
+    env = {**os.environ, "GULYAS_TEMPLATES_DIR": str(tdir)}
+    r = subprocess.run([sys.executable, "environment/scripts/env-setup"],
+                       input=answers, capture_output=True, text=True,
+                       cwd=REPO_ROOT, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    created = tdir / "web-strict.json"
+    assert created.exists(), r.stdout
+    t = json.loads(created.read_text())
+    assert t["alias"] == "web-strict"
+    # interview must have started with existing templates
+    assert "found 1 template" in r.stdout
+    # artifacts rendered into the isolated root, not the real checkout
+    assert (tmp_path / "environment" / "firejail" / "herdr-agent-web-strict.profile").exists()
+    assert not (REPO_ROOT / "environment" / "firejail" / "herdr-agent-web-strict.profile").exists()
+
+
+def test_provision_worktree_copies_scope(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    r = _run(["bash", "environment/scripts/provision-worktree", "--worktree", str(wt)])
+    assert r.returncode == 0, r.stderr
+    assert (wt / ".claude" / "settings.json").exists()
+    assert "Stay inside this worktree" in (wt / "AGENTS.md").read_text()
+    # idempotent: re-run does not duplicate the snippet
+    r = _run(["bash", "environment/scripts/provision-worktree", "--worktree", str(wt)])
+    assert r.returncode == 0
+    assert (wt / "AGENTS.md").read_text().count("Stay inside this worktree") == 1

@@ -82,8 +82,9 @@ fi
 
 cat <<EOF
 == done (warnings: $warned)
-next:
-  1) .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 &
+next (one proxy per template you use; default shown):
+  1) .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
   2) herdr worktree create --branch feat/my-task --no-focus   # where herdr lives
-  3) bash environment/scripts/herdr-agent-firejail --template default --worktree <WT> --budget-id <id> --budget-max 200 -- claude
+  3) bash environment/scripts/provision-worktree --worktree <WT>
+  4) bash environment/scripts/herdr-agent-firejail --template default --worktree <WT> --budget-id <id> --budget-max 200 -- claude
 EOF

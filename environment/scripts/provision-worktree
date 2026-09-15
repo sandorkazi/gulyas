@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# provision-worktree — copy agent scope configs into a new Herdr worktree.
+# Usage: bash environment/scripts/provision-worktree --worktree PATH
+# (Herdr plugins tdi/herdr-worktree-setup or arjenblokzijl/herdr-worktree-provisioner
+#  can call this after `herdr worktree create`.)
+set -euo pipefail
+WORKTREE=""
+while [[ $# -gt 0 ]]; do case "$1" in
+  --worktree) WORKTREE="$2"; shift 2;;
+  -h|--help) echo "Usage: $(basename "$0") --worktree PATH"; exit 0;;
+  *) echo "bad arg $1" >&2; exit 2;;
+esac; done
+[[ -n "$WORKTREE" ]] || { echo "--worktree PATH required" >&2; exit 2; }
+[[ -d "$WORKTREE" ]] || { echo "worktree not found: $WORKTREE" >&2; exit 2; }
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+mkdir -p "$WORKTREE/.claude"
+cp "$ROOT/environment/agent/claude-settings.json" "$WORKTREE/.claude/settings.json"
+# Append scope snippet to AGENTS.md without duplicating on re-runs.
+touch "$WORKTREE/AGENTS.md"
+if ! grep -q "Stay inside this worktree" "$WORKTREE/AGENTS.md" 2>/dev/null; then
+  { echo; cat "$ROOT/environment/agent/AGENTS.md.snippet"; } >> "$WORKTREE/AGENTS.md"
+fi
+echo "provisioned $WORKTREE (.claude/settings.json + AGENTS.md scope)"
