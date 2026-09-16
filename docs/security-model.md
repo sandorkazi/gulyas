@@ -11,7 +11,7 @@ Companion: `architecture.html` §2–§4 (diagrams), `usage-guide.md` §8
 | # | Layer | Enforced by | Breaks if you… |
 | --- | --- | --- | --- |
 | 1 | Filesystem jail | Firejail profile + wrapper flags (`--blacklist` siblings, `--whitelist` own worktree, `noroot`, `nonewprivs`, `seccomp`, `caps.drop all`, no D-Bus/X11) | launch the agent without the wrapper; hand-edit generated profiles; run on a kernel without user namespaces |
-| 2 | Network allowlist + budget | Netfilter DROP-direct-egress + localhost proxy (`allowlist.txt` + `count[BUDGET_ID] < BUDGET_MAX` + JSONL audit) | point the agent at the wrong proxy port; widen the allowlist; set an oversized budget; let the agent use `--noproxy` (mitigated: netfilter DROPs it anyway, agent `deny` rules reinforce) |
+| 2 | Network allowlist + budget | Netfilter DROP-direct-egress + localhost proxy (`allowlist.txt` + per-task registry `(max, secret)` in `tasks.json` + `count[BUDGET_ID] < max` + JSONL audit) | point the agent at the wrong proxy port; widen the allowlist; set an oversized budget; let the agent use `--noproxy` (mitigated: netfilter DROPs it anyway, agent `deny` rules reinforce) |
 | 3 | Agent-native rules | `provision-worktree` → `.claude/settings.json` (`deny` outside-worktree reads, `sudo`, `curl --noproxy`, `wget`, `ssh`; `WebFetch` allowlist with `ask` fallback) | skip provisioning; use an agent CLI that ignores these files |
 | 4 | Advisory scope | `AGENTS.md` snippet ("stay in repo, use proxy, don't escalate") | prompt-injection or a careless model — **never rely on this** |
 
@@ -43,7 +43,11 @@ Prompt text is advisory only. The audit trail is
    inside your jail, against the outside world.
 3. **Budgets cap volume, not intent.** A few hundred requests are plenty for
    exfiltration or abuse of a third party. The audit log records what happened
-   but does not prevent it.
+   but does not prevent it. Per-task caps + secrets stop *accidental*
+   cross-task billing (wrong ID, shared helper scripts) — not a same-UID
+   snooper reading another task's proxy URL from `/proc` cmdline or its own
+   jail env. Against a deliberately malicious same-UID agent, treat the
+   budget as accounting, not a security boundary.
 4. **DNS stays open** (`:53`) for proxy resolution unless the template sets
    `allow_dns: false` (`offline`); direct TCP/UDP egress stays DROPped.
    Raw TCP/UDP/ICMP is intentionally unsupported (HTTP/HTTPS proxy only).

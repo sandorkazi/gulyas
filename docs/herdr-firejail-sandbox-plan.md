@@ -163,12 +163,16 @@ node 8892, python 8893):
   api.anthropic.com
   ```
 * Env per agent: `BUDGET_ID=<workspace-id>`, `BUDGET_MAX=200`. The wrapper
-  encodes `BUDGET_ID` in the proxy-URL userinfo
-  (`http://<budget-id>@127.0.0.1:<port>`), which stock tools forward as
+  encodes `BUDGET_ID:SECRET` in the proxy-URL userinfo
+  (`http://<budget-id>:<secret>@127.0.0.1:<port>`, secret fresh-random per
+  launch unless `--budget-secret` is given), which stock tools forward as
   `Proxy-Authorization: Basic ...` on every request including `CONNECT`.
   The proxy decodes that first, then `X-Budget-Id`, then last-seen-per-IP,
   then its `--budget-id` default — so tasks sharing a template proxy are
-  still accounted separately.
+  still accounted separately. Launch also registers `(id, max, secret)` in
+  `<state-dir>/tasks.json` (hot-reloaded): registered tasks are capped at
+  their own max and a wrong/missing secret is denied as `403
+  budget-auth-failed`; unregistered IDs use the instance `--budget-max`.
 * Behavior: `CONNECT host:443` / `GET http://host/` → check allowlist →
   check `count[BUDGET_ID] < BUDGET_MAX` → forward or `403 domain-not-allowed` /
   `429 budget-exhausted`. Append JSONL to `~/.local/state/herdr-web-proxy/access.log`.

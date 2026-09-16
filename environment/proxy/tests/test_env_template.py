@@ -198,13 +198,36 @@ def test_wrapper_encodes_budget_and_sibling_blacklist():
               "bash environment/scripts/herdr-agent-firejail --template default "
               "--worktree /tmp/wt-demo --budget-id 'task a/b' --budget-max 7 --show-template"])
     assert r.returncode == 0
-    assert "task%20a%2Fb@" in r.stdout  # userinfo URL-encoded
+    assert "task%20a%2Fb:" in r.stdout  # userinfo URL-encoded (id:secret form)
+    assert "<redacted>" in r.stdout  # show mode never prints the real secret
     assert "--blacklist" in r.stdout or "sibling isolation" in r.stdout
+    assert "registered at launch" in r.stdout  # per-task cap is enforced, not advisory
     # dry-run the real firejail argv via bash -x? Instead check script text.
     text = (REPO_ROOT / "environment" / "scripts" / "herdr-agent-firejail").read_text()
     assert '--blacklist="$HOME/.herdr/worktrees"' in text
     assert '--noblacklist="$WORKTREE"' in text
-    assert "PROXY_USER" in text and "PROXY_URL" in text
+    assert "PROXY_USER" in text and "PROXY_PASS" in text and "register_task" in text
+
+
+def test_wrapper_register_only_writes_registry(tmp_path):
+    state = tmp_path / "state"
+    r = _run(["bash", "environment/scripts/herdr-agent-firejail",
+              "--template", "default",
+              "--budget-id", "reg-task", "--budget-max", "7",
+              "--budget-secret", "s3cr3t", "--state-dir", str(state),
+              "--register-only"])
+    assert r.returncode == 0, r.stderr
+    assert "registered budget 'reg-task' max=7" in r.stdout
+    assert "<redacted>" in r.stdout
+    assert "s3cr3t" not in r.stdout  # secret never echoed
+    reg = json.loads((state / "tasks.json").read_text())
+    assert reg == {"reg-task": {"max": 7, "secret": "s3cr3t"}}
+    # invalid max is rejected before writing
+    r = _run(["bash", "environment/scripts/herdr-agent-firejail",
+              "--template", "default",
+              "--budget-id", "reg-task", "--budget-max", "0",
+              "--state-dir", str(state), "--register-only"])
+    assert r.returncode != 0
 
 
 def test_env_setup_lists_existing_templates():

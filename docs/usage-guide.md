@@ -24,7 +24,7 @@ work can proceed without Herdr installed.
 ```bash
 git clone <this-repo> gulyas && cd gulyas
 ./init.sh                 # .venv + test deps + render templates + symlink configs
-.venv/bin/pytest environment/proxy/tests -q   # expect 27 passed
+.venv/bin/pytest environment/proxy/tests -q   # expect 34 passed
 ./init.sh --check         # tool status only, changes nothing
 ./init.sh --smoke         # setup + run proxy unit tests
 ```
@@ -59,10 +59,11 @@ Proxy CLI reference (`herdr_web_proxy.py`):
 | --- | --- | --- |
 | `--port` | `8888` (`$PROXY_PORT`) | listen on `127.0.0.1:<port>` only |
 | `--allowlist` | `proxy/config/allowlist.txt` (`$ALLOWLIST`) | one domain/line, `*.ex.com` = subdomains only |
-| `--budget-max` | `200` (`$BUDGET_MAX`) | max requests per `BUDGET_ID` on this instance |
+| `--budget-max` | `200` (`$BUDGET_MAX`) | max requests for *unregistered* IDs on this instance |
 | `--budget-id` | `default` (`$BUDGET_ID`) | fallback identity when no userinfo/header seen |
-| `--state-dir` | `~/.local/state/herdr-web-proxy` (`$STATE_DIR`) | `budget.json` + `access.log` live here |
+| `--state-dir` | `~/.local/state/herdr-web-proxy` (`$STATE_DIR`) | `budget.json` + `tasks.json` + `access.log` live here |
 | `--reset <id>` | — | reset that task's counter and exit |
+| `--revoke <id>` | — | drop that task's registry entry + counter and exit |
 
 Docker alternative (same proxy, containerized; host `.venv` stays default):
 
@@ -71,6 +72,12 @@ docker compose -f environment/docker/compose.yml up --build   # default :8888
 TEMPLATE_SUFFIX=-strict PROXY_PORT=8889 BUDGET_MAX=50 \
   docker compose -f environment/docker/compose.yml up --build # strict :8889
 ```
+
+Note: the container keeps its own `proxy-state` volume, so task registrations
+written by the wrapper to the host state dir do **not** reach it — registered
+tasks would fall back to the instance `--budget-max` with no auth check.
+Bind-mount the host state dir over `/state` if you need per-task caps with
+the docker proxy.
 
 ## 3. Create + provision the worktree (per task)
 
@@ -103,10 +110,13 @@ Wrapper flags:
 | `--worktree PATH` | **required.** the task's own checkout; siblings stay blacklisted |
 | `--kind K` | `HERDR_AGENT` value Herdr uses to classify the pane (default from template) |
 | `--budget-id ID` | URL-encoded into proxy userinfo → `Proxy-Authorization` → per-task accounting |
-| `--budget-max N` | shown in `--show-template` proxy command; enforced by the proxy instance |
+| `--budget-max N` | registered as this task's cap in `<state-dir>/tasks.json`; **enforced** by the proxy |
+| `--budget-secret S` | task token for proxy auth (default: fresh random per launch; explicit = reproducible) |
+| `--state-dir D` | proxy state dir holding `tasks.json` (default: `$STATE_DIR` or `~/.local/state/herdr-web-proxy`) |
+| `--register-only` | register the task budget and exit — no jail launch (docker flows, tests) |
 | `--proxy-port P` | override template port (must match the running proxy) |
 | `--list-templates` | list aliases and exit |
-| `--show-template` | print resolved profile/netfilter/allowlist + proxy command and exit |
+| `--show-template` | print resolved profile/netfilter/allowlist + proxy command and exit (secret redacted) |
 
 Inspect before launching:
 
@@ -128,11 +138,18 @@ Any agent CLI works after `--`: `claude`, `codex`, `opencode`, `bash`, …
 ## 5. Operate: budgets, logs, parallel tasks
 
 ```bash
-# tail decisions live (JSONL: ts host decision budget_id count method code):
+# tail decisions live (JSONL: ts host decision budget_id count method code auth):
 tail -f ~/.local/state/herdr-web-proxy/access.log
 
-# budget exhausted (429)? either raise-and-restart the proxy or reset the task:
+# budget exhausted (429)? reset the task counter, or revoke the task entirely:
 .venv/bin/python environment/proxy/src/herdr_web_proxy.py --reset feat-my-task
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --revoke feat-my-task
+
+# launching registers (id, max, secret) in <state-dir>/tasks.json automatically —
+# no proxy restart needed. Register without launching (docker flows, tests):
+bash environment/scripts/herdr-agent-firejail --template default \
+  --budget-id feat-my-task --budget-max 200 --state-dir ~/.local/state/herdr-web-proxy \
+  --register-only
 
 # parallel tasks: distinct BUDGET_IDs share one template proxy safely:
 bash environment/scripts/herdr-agent-firejail --template default \
@@ -177,8 +194,11 @@ uppercase. Override dir in tests via `GULYAS_TEMPLATES_DIR`.
 
 ```bash
 herdr worktree remove --workspace <child-id>   # git worktree remove, keeps branch
-.venv/bin/python environment/proxy/src/herdr_web_proxy.py --reset feat-my-task
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --revoke feat-my-task
 ```
+
+`--revoke` drops the task's registry entry *and* counter; `--reset` clears
+only the counter (keeps the cap + secret).
 
 ## 8. Troubleshooting
 
