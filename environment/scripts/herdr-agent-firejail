@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # herdr-agent-firejail — launch an agent CLI inside Firejail, wired to the allowlist proxy.
-# Usage: herdr-agent-firejail [--template ALIAS] --worktree PATH [--kind claude] [--budget-id ID] [--budget-max N] [--proxy-port P] -- <agent> [args...]
+# Usage: herdr-agent-firejail [--template ALIAS] --worktree PATH [--kind claude] [--budget-id ID] [--budget-max N] [--budget-secret S] [--proxy-port P] [--state-dir D] [--register-only] -- <agent> [args...]
 # Templates come from environment/templates/<alias>.json (see env-setup). Defaults: --template default.
+# At launch the task (id, max, secret) is registered in <state-dir>/tasks.json so the
+# proxy enforces this task's own budget max and rejects other tasks' IDs. --budget-secret
+# defaults to a fresh random token per launch; pass an explicit one for reproducible runs.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKTREE=""; KIND=""; KIND_SET=0; BUDGET_ID="default"; BUDGET_MAX=""; BUDGET_MAX_SET=0
+BUDGET_SECRET=""; BUDGET_SECRET_SET=0; STATE_DIR_ARG=""; REGISTER_ONLY=0
 TEMPLATE="default"; PROXY_PORT=""; PROXY_PORT_SET=0
 LIST_TEMPLATES=0; SHOW_TEMPLATE=0
 while [[ $# -gt 0 ]]; do case "$1" in
@@ -12,15 +16,21 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --kind) KIND="$2"; KIND_SET=1; shift 2;;
   --budget-id) BUDGET_ID="$2"; shift 2;;
   --budget-max) BUDGET_MAX="$2"; BUDGET_MAX_SET=1; shift 2;;
+  --budget-secret) BUDGET_SECRET="$2"; BUDGET_SECRET_SET=1; shift 2;;
+  --state-dir) STATE_DIR_ARG="$2"; shift 2;;
+  --register-only) REGISTER_ONLY=1; shift;;
   --proxy-port) PROXY_PORT="$2"; PROXY_PORT_SET=1; shift 2;;
   --template|--env-template) TEMPLATE="$2"; shift 2;;
   --list-templates) LIST_TEMPLATES=1; shift;;
   --show-template) SHOW_TEMPLATE=1; shift;;
   -h|--help)
-    echo "Usage: $(basename "$0") [--template ALIAS] --worktree PATH [--kind K] [--budget-id ID] [--budget-max N] [--proxy-port P] -- <agent> [args...]"
+    echo "Usage: $(basename "$0") [--template ALIAS] --worktree PATH [--kind K] [--budget-id ID] [--budget-max N] [--budget-secret S] [--proxy-port P] [--state-dir D] [--register-only] -- <agent> [args...]"
     echo "  Templates: environment/templates/<alias>.json (create with: bash environment/scripts/env-setup)"
+    echo "  --budget-secret S  task token for proxy auth (default: fresh random per launch)"
+    echo "  --state-dir D      proxy state dir holding tasks.json (default: \$STATE_DIR or ~/.local/state/herdr-web-proxy)"
+    echo "  --register-only    register the task budget and exit (no firejail launch; for docker flows/tests)"
     echo "  --list-templates   list available env templates and exit"
-    echo "  --show-template    print resolved profile/netfilter/allowlist + proxy command and exit"
+    echo "  --show-template    print resolved profile/netfilter/allowlist + proxy command and exit (secret redacted)"
     exit 0;;
   --) shift; break;;
   *) echo "bad arg $1" >&2; exit 2;;
@@ -55,11 +65,42 @@ EOF
 [[ "$KIND_SET" == 1 ]] || KIND="$TEMPLATE_KIND"
 [[ "$BUDGET_MAX_SET" == 1 ]] || BUDGET_MAX="$TEMPLATE_BUDGET_MAX"
 [[ "$PROXY_PORT_SET" == 1 ]] || PROXY_PORT="$TEMPLATE_PORT"
-# Encode BUDGET_ID as proxy-URL userinfo so stock tools send it as
+# Encode BUDGET_ID:SECRET as proxy-URL userinfo so stock tools send it as
 # Proxy-Authorization on every request (incl. CONNECT, which has no custom
-# headers). The proxy decodes it for per-task budget accounting.
-PROXY_USER="$(BUDGET_ID="$BUDGET_ID" python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["BUDGET_ID"], safe=""))')"
-PROXY_URL="http://${PROXY_USER}@127.0.0.1:${PROXY_PORT}"
+# headers). The proxy decodes it for per-task budget accounting and enforces
+# the task's own max from the registry (see register_task below).
+if [[ "$BUDGET_SECRET_SET" == 0 ]]; then
+  BUDGET_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+fi
+eval "$(BUDGET_ID="$BUDGET_ID" BUDGET_SECRET="$BUDGET_SECRET" python3 - <<'EOF'
+import os, urllib.parse
+print("PROXY_USER=" + urllib.parse.quote(os.environ["BUDGET_ID"], safe=""))
+print("PROXY_PASS=" + urllib.parse.quote(os.environ["BUDGET_SECRET"], safe=""))
+EOF
+)"
+PROXY_URL="http://${PROXY_USER}:${PROXY_PASS}@127.0.0.1:${PROXY_PORT}"
+PROXY_URL_REDACTED="http://${PROXY_USER}:<redacted>@127.0.0.1:${PROXY_PORT}"
+# State dir must match the proxy's --state-dir (proxy default shown).
+TASK_STATE_DIR="${STATE_DIR_ARG:-${STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-web-proxy}}"
+
+register_task() {
+  # BUDGET_MAX must be a positive int — the proxy enforces it for this task.
+  [[ "$BUDGET_MAX" =~ ^[0-9]+$ ]] && [[ "$BUDGET_MAX" -ge 1 ]] \
+    || { echo "--budget-max must be a positive int (got '$BUDGET_MAX')" >&2; exit 2; }
+  [[ -n "$BUDGET_ID" ]] || { echo "--budget-id must be non-empty" >&2; exit 2; }
+  [[ -n "$BUDGET_SECRET" ]] || { echo "--budget-secret must be non-empty" >&2; exit 2; }
+  REPO_ROOT="$REPO_ROOT" TASK_STATE_DIR="$TASK_STATE_DIR" \
+    BUDGET_ID="$BUDGET_ID" BUDGET_MAX="$BUDGET_MAX" BUDGET_SECRET="$BUDGET_SECRET" python3 - <<'EOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ["REPO_ROOT"] + "/environment/proxy/src")
+from herdr_web_proxy import TaskRegistry
+TaskRegistry(Path(os.environ["TASK_STATE_DIR"]) / "tasks.json").register(
+    os.environ["BUDGET_ID"], int(os.environ["BUDGET_MAX"]), os.environ["BUDGET_SECRET"])
+print(f"registered budget {os.environ['BUDGET_ID']!r} "
+      f"max={os.environ['BUDGET_MAX']} in {os.environ['TASK_STATE_DIR']}/tasks.json")
+EOF
+}
 
 # Per-template artifact names (must match lib_env_template.artifact_paths).
 if [[ "$TEMPLATE" == "default" ]]; then
@@ -93,13 +134,20 @@ if [[ "$SHOW_TEMPLATE" == 1 ]]; then
   echo "netfilter: $NETFILTER"
   echo "allowlist: $ALLOWLIST_FILE"
   echo "kind=$KIND budget_id=$BUDGET_ID budget_max=$BUDGET_MAX proxy_port=$PROXY_PORT"
-  echo "proxy_url: $PROXY_URL"
+  echo "proxy_url: $PROXY_URL_REDACTED"
+  echo "task:      budget $BUDGET_ID max=$BUDGET_MAX enforced by proxy (registered at launch in $TASK_STATE_DIR/tasks.json)"
   echo "proxy:     .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port $PROXY_PORT --allowlist $ALLOWLIST_FILE --budget-max $BUDGET_MAX"
   echo "sibling isolation: --blacklist=\$HOME/.herdr/worktrees + --whitelist=\$WORKTREE"
   exit 0
 fi
+if [[ "$REGISTER_ONLY" == 1 ]]; then
+  register_task
+  echo "proxy_url: $PROXY_URL_REDACTED (full URL with secret is only exported to the jailed agent env)"
+  exit 0
+fi
 if [[ -z "$WORKTREE" ]]; then echo "--worktree PATH required" >&2; exit 2; fi
 if [[ $# -eq 0 ]]; then echo "agent command required after --" >&2; exit 2; fi
+register_task
 # Fall back to repo copies if not installed yet (dev mode)
 [[ -f "$PROFILE" ]] || PROFILE="$BASE_PROFILE"
 [[ -f "$NETFILTER" ]] || NETFILTER="$BASE_NETFILTER"

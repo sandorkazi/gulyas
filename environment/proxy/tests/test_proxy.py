@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
-from herdr_web_proxy import BudgetStore, ProxyServer, ProxyHandler, host_allowed  # noqa: E402
+from herdr_web_proxy import BudgetStore, ProxyServer, ProxyHandler, TaskRegistry, host_allowed, main  # noqa: E402
 from lib_env_template import is_valid_domain_pattern  # noqa: E402
 
 
@@ -72,7 +72,7 @@ def _start(server):
     return t
 
 
-def _proxy(tmp_path, allowlist, budget_max=10, default_budget="default"):
+def _proxy(tmp_path, allowlist, budget_max=10, default_budget="default", tasks=None):
     state = tmp_path / "pstate"
     state.mkdir(exist_ok=True)
     budgets = BudgetStore(state)
@@ -80,9 +80,15 @@ def _proxy(tmp_path, allowlist, budget_max=10, default_budget="default"):
                       allowlist=allowlist, budgets=budgets,
                       default_budget_id=default_budget,
                       budget_max=budget_max,
-                      access_log=state / "access.log")
+                      access_log=state / "access.log",
+                      tasks=tasks)
     _start(srv)
     return srv
+
+
+def _auth(user, secret=None):
+    creds = base64.b64encode(f"{user}:{secret or ''}".encode()).decode()
+    return {"Proxy-Authorization": f"Basic {creds}"}
 
 
 def _get_via_proxy(proxy_port, host, port, path="/", headers=None):
@@ -179,3 +185,126 @@ def test_proxy_logs_decisions_jsonl(tmp_path):
         assert rec["code"] == 403
     finally:
         px.shutdown()
+
+
+def test_registry_register_get_revoke_roundtrip(tmp_path):
+    reg = TaskRegistry(tmp_path / "tasks.json")
+    assert reg.get("t1") is None
+    reg.register("t1", 7, "s3cr3t")
+    assert reg.get("t1") == {"max": 7, "secret": "s3cr3t"}
+    reg.register("t1", 9, "new")  # update keeps other entries
+    reg.register("t2", 3, "s2")
+    assert reg.get("t1") == {"max": 9, "secret": "new"}
+    assert reg.get("t2") == {"max": 3, "secret": "s2"}
+    assert reg.revoke("t1") is True
+    assert reg.get("t1") is None and reg.get("t2") is not None
+    assert reg.revoke("t1") is False
+    for bad in [( "", 1, "s"), ("x", 0, "s"), ("x", 1, "")]:
+        try:
+            reg.register(*bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"register accepted {bad!r}")
+
+
+def test_proxy_enforces_per_task_max(tmp_path):
+    up = HTTPServer(("127.0.0.1", 0), _Upstream)
+    _start(up)
+    uport = up.server_address[1]
+    reg = TaskRegistry(tmp_path / "tasks.json")
+    reg.register("small", 1, "s-small")
+    reg.register("big", 10, "s-big")
+    px = _proxy(tmp_path, ["127.0.0.1"], budget_max=100, tasks=reg)
+    pport = px.server_address[1]
+    try:
+        assert _get_via_proxy(pport, "127.0.0.1", uport,
+                              headers=_auth("small", "s-small")).status == 200
+        r = _get_via_proxy(pport, "127.0.0.1", uport, headers=_auth("small", "s-small"))
+        assert r.status == 429 and b"budget-exhausted" in r.read()
+        # big task unaffected by small's exhaustion; unregistered id uses instance max
+        assert _get_via_proxy(pport, "127.0.0.1", uport,
+                              headers=_auth("big", "s-big")).status == 200
+        assert _get_via_proxy(pport, "127.0.0.1", uport,
+                              headers=_auth("plain", "")).status == 200
+    finally:
+        px.shutdown()
+        up.shutdown()
+
+
+def test_proxy_rejects_wrong_or_missing_secret(tmp_path):
+    up = HTTPServer(("127.0.0.1", 0), _Upstream)
+    _start(up)
+    uport = up.server_address[1]
+    reg = TaskRegistry(tmp_path / "tasks.json")
+    reg.register("locked", 5, "correct")
+    px = _proxy(tmp_path, ["127.0.0.1"], budget_max=100, tasks=reg)
+    pport = px.server_address[1]
+    try:
+        r = _get_via_proxy(pport, "127.0.0.1", uport, headers=_auth("locked", "wrong"))
+        assert r.status == 403 and b"budget-auth-failed" in r.read()
+        r = _get_via_proxy(pport, "127.0.0.1", uport, headers={"X-Budget-Id": "locked"})
+        assert r.status == 403 and b"budget-auth-failed" in r.read()
+        # failed attempts consume nothing: correct secret still has full budget
+        for _ in range(5):
+            assert _get_via_proxy(pport, "127.0.0.1", uport,
+                                  headers=_auth("locked", "correct")).status == 200
+        r = _get_via_proxy(pport, "127.0.0.1", uport, headers=_auth("locked", "correct"))
+        assert r.status == 429
+    finally:
+        px.shutdown()
+        up.shutdown()
+
+
+def test_proxy_picks_up_registry_without_restart(tmp_path):
+    up = HTTPServer(("127.0.0.1", 0), _Upstream)
+    _start(up)
+    uport = up.server_address[1]
+    reg = TaskRegistry(tmp_path / "tasks.json")
+    px = _proxy(tmp_path, ["127.0.0.1"], budget_max=100, tasks=reg)
+    pport = px.server_address[1]
+    try:
+        # unregistered: instance default applies
+        assert _get_via_proxy(pport, "127.0.0.1", uport,
+                              headers=_auth("late", "")).status == 200
+        reg.register("late", 1, "s-late")  # already spent 1
+        r = _get_via_proxy(pport, "127.0.0.1", uport, headers=_auth("late", "s-late"))
+        assert r.status == 429  # per-task max now enforced, no restart
+    finally:
+        px.shutdown()
+        up.shutdown()
+
+
+def test_budget_store_shared_file_no_lost_updates(tmp_path):
+    a = BudgetStore(tmp_path)
+    b = BudgetStore(tmp_path)  # second handle, as a second proxy process would hold
+    errors = []
+
+    def hammer(store, n):
+        try:
+            for _ in range(n):
+                store.check_and_consume("shared", 1000)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=hammer, args=(s, 25)) for s in (a, b) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    fresh = BudgetStore(tmp_path)
+    assert fresh.counts.get("shared") == 8 * 25
+
+
+def test_main_reset_and_revoke(tmp_path):
+    state = tmp_path / "state"
+    reg = TaskRegistry(state / "tasks.json")
+    reg.register("job", 4, "s")
+    store = BudgetStore(state)
+    assert store.check_and_consume("job", 4) == (True, 1)
+    assert main(["--state-dir", str(state), "--reset", "job"]) == 0
+    assert BudgetStore(state).counts.get("job", 0) == 0
+    assert main(["--state-dir", str(state), "--revoke", "job"]) == 0
+    assert TaskRegistry(state / "tasks.json").get("job") is None
+    assert main(["--state-dir", str(state), "--revoke", "job"]) == 0  # idempotent

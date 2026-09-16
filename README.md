@@ -33,9 +33,10 @@ Two halves, each replaceable:
   `429 budget-exhausted`. Each env template has its own loopback port
   (default 8888, strict 8889, offline 8890, web 8891, node 8892, python 8893),
   so run one proxy instance per template you use. The wrapper encodes the
-  task's `--budget-id` in the proxy URL userinfo, which stock tools forward
-  as `Proxy-Authorization` — the proxy decodes it for per-task accounting on
-  both plain HTTP and `CONNECT`.
+   task's `--budget-id` + per-launch secret in the proxy URL userinfo, which stock tools forward
+   as `Proxy-Authorization` — the proxy decodes it for per-task accounting on
+   both plain HTTP and `CONNECT`, enforces the task's own registered max, and
+   rejects wrong/missing secrets as `403 budget-auth-failed`.
 - **Env templates:** one named jail+proxy policy per environment pattern
   (`environment/templates/<alias>.json`, created via the `env-setup`
   interview). The profile, netfilter, and allowlist above are generated from

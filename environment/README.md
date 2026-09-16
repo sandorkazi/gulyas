@@ -47,11 +47,16 @@ bash environment/scripts/herdr-agent-firejail --template default --worktree ~/.h
   --budget-id feat-x --budget-max 200 -- claude
 ```
 
-Budget identity: the wrapper encodes `--budget-id` in the proxy URL userinfo,
-so curl/git/pip/npm send it as `Proxy-Authorization: Basic ...` on every
-request (including `CONNECT`). The proxy decodes it first, then `X-Budget-Id`,
-then last-seen-per-IP, then its `--budget-id` default. Tasks sharing one
-template proxy are still accounted separately.
+Budget identity: the wrapper encodes `--budget-id` plus a per-launch secret
+in the proxy URL userinfo, so curl/git/pip/npm send it as
+`Proxy-Authorization: Basic ...` on every request (including `CONNECT`). The
+proxy decodes it first, then `X-Budget-Id`, then last-seen-per-IP, then its
+`--budget-id` default — so tasks sharing one template proxy are still
+accounted separately. Launch also registers `(id, max, secret)` in
+`<state-dir>/tasks.json` (reloaded without restart): the task is capped at
+its own `--budget-max` and a wrong/missing secret is denied as `403
+budget-auth-failed` without consuming budget. Unregistered IDs fall back to
+the instance `--budget-max` with no auth check.
 
 ## Env templates (new environment patterns)
 
