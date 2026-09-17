@@ -47,6 +47,7 @@ Two halves, each replaceable:
   `environment/docker/` holds an equivalent image as an alternative.
 
 Full design: [`docs/herdr-firejail-sandbox-plan.md`](docs/herdr-firejail-sandbox-plan.md).
+Tutorial (jailed agentic TDD loop → mobile app): [`docs/tutorial-tdd-mobile-loop.md`](docs/tutorial-tdd-mobile-loop.md).
 Environment details: [`environment/README.md`](environment/README.md).
 Docs index: [`docs/README.md`](docs/README.md) · diagrams: [`docs/architecture.html`](docs/architecture.html) ·
 usage: [`docs/usage-guide.md`](docs/usage-guide.md) · security: [`docs/security-model.md`](docs/security-model.md) ·
@@ -88,6 +89,8 @@ Reset a task budget: `.venv/bin/python environment/proxy/src/herdr_web_proxy.py 
 gulyas/
   init.sh                              # canonical bootstrap (this README's entrypoint)
   docs/herdr-firejail-sandbox-plan.md  # goals, threat model, acceptance tests
+  docs/tutorial-tdd-mobile-loop.md   # hands-on scenario: jailed TDD loop → mobile core
+  tutorial/tdd-mobile/               # runnable companion (agentic_loop.py + run-in-jail.sh)
   environment/
     README.md                          # host-.venv vs docker decision + usage
     proxy/src/herdr_web_proxy.py       # stdlib-only egress proxy

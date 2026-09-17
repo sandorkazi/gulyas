@@ -126,6 +126,10 @@ BASE_PROFILE="$REPO_ROOT/environment/firejail/herdr-agent.profile"
 BASE_NETFILTER="$REPO_ROOT/environment/firejail/herdr-netfilter.net"
 PROFILE="$(pick_file FIREJAIL_PROFILE "$INSTALLED_PROFILE" "$REPO_PROFILE" "$BASE_PROFILE")"
 NETFILTER="$(pick_file FIREJAIL_NETFILTER "$INSTALLED_NETFILTER" "$REPO_NETFILTER" "$BASE_NETFILTER")"
+# Firejail rejects symlink netfilter files ("invalid network filter file");
+# init.sh installs them as symlinks (repo stays source of truth), so resolve
+# to the real path before passing --netfilter. Profiles accept symlinks.
+if [[ -f "$NETFILTER" ]]; then NETFILTER="$(readlink -f "$NETFILTER")"; fi
 if [[ -f "$INSTALLED_ALLOWLIST" ]]; then ALLOWLIST_FILE="$INSTALLED_ALLOWLIST"; else ALLOWLIST_FILE="$REPO_ALLOWLIST"; fi
 
 if [[ "$SHOW_TEMPLATE" == 1 ]]; then

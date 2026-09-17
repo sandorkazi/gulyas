@@ -8,6 +8,9 @@ proxy is reachable under that rule with zero port publishing. A container needs
 `network_mode: host` to land on the same loopback, which is fine but adds a
 moving part. Keep host default; container for CI / shared runners.
 
+Hands-on path through all of the below: [`../docs/tutorial-tdd-mobile-loop.md`](../docs/tutorial-tdd-mobile-loop.md)
+(jailed agentic TDD loop building a mobile-app core on the `offline` template).
+
 ## Layout
 
 ```text

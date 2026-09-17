@@ -5,7 +5,9 @@ proxy → worktree → provision → jail → audit → cleanup.
 
 See [`architecture.html`](architecture.html) for the pictures,
 [`template-reference.md`](template-reference.md) for policy fields,
-[`security-model.md`](security-model.md) for what the jail does *not* cover.
+[`security-model.md`](security-model.md) for what the jail does *not* cover,
+[`tutorial-tdd-mobile-loop.md`](tutorial-tdd-mobile-loop.md) for the hands-on
+jailed TDD scenario that exercises this whole page end to end.
 
 ## 0. Requirements
 
