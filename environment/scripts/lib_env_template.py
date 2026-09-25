@@ -224,8 +224,8 @@ def render_profile(t: dict) -> str:
     tools = fs.get("allowed_tools", [])
     for p in fs.get("read_only_toolchain", []):
         if tools and p in ("/bin", "bin"):
-            continue  # private-bin below scopes /bin instead of a blanket whitelist
-        lines.append(f"whitelist {p}")
+            continue  # private-bin below scopes /bin instead of a blanket read-only
+        lines.append(f"read-only {p}")
     for p in fs.get("writable_caches", []):
         lines.append(f"whitelist {p}")
     # go mod cache is conventionally read-only; keep explicit if listed writable

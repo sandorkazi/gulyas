@@ -24,8 +24,8 @@ blacklist ${HOME}/.aws
 blacklist ${HOME}/.config/gh
 blacklist ${HOME}/.config/herdr
 noblacklist ${HOME}/.herdr/worktrees
-whitelist /usr
-whitelist /bin
+read-only /usr
+read-only /bin
 whitelist ${HOME}/.cache
 whitelist ${HOME}/.npm
 whitelist ${HOME}/go/pkg/mod

@@ -43,7 +43,7 @@ def test_render_profile_covers_firejail_drilldown():
     for directive in ("noroot", "nonewprivs", "seccomp", "private-tmp",
                       "private-dev", "disable-mnt", "x11 none",
                       "dbus-user none", "restrict-namespaces",
-                      "blacklist ${HOME}/.ssh", "whitelist /usr"):
+                      "blacklist ${HOME}/.ssh", "read-only /usr"):
         assert directive in out, directive
     assert "nox11" not in out  # invalid profile syntax (firejail wants `x11 none`)
     assert "noprofile" not in out  # CLI-only flag, must not appear in profile file
@@ -69,7 +69,7 @@ def test_default_template_ungated():
     t = load_template("default")
     out = render_profile(t)
     assert "private-bin" not in out
-    assert "whitelist /bin" in out
+    assert "read-only /bin" in out
 
 
 def test_strict_template_tool_gate():
@@ -77,7 +77,7 @@ def test_strict_template_tool_gate():
     assert validate_template(t) == []
     out = render_profile(t)
     assert "private-bin bash,sh,env,git,python3,node,npm,ls,cat,grep,sed,find" in out
-    assert "whitelist /bin" not in out  # private-bin scopes /bin instead
+    assert "read-only /bin" not in out  # private-bin scopes /bin instead
     assert "blacklist ${HOME}/.docker" in out
 
 
