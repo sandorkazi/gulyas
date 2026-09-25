@@ -95,5 +95,14 @@ bash environment/scripts/herdr-agent-firejail --template offline \
   --budget-id tdd-mobile --budget-max 50 -- claude
 ```
 
+Same launch via the project CLI (`docs/usage-guide.md` §1b) — `init`
+scaffolds `gulyas.yaml` + `GOAL.md` in a task folder, `run` provisions,
+registers the budget and execs the wrapper call above:
+
+```bash
+./bin/gulyas init /tmp/tdd-green --template offline --with-agents
+./bin/gulyas run /tmp/tdd-green -- claude   # after filling GOAL.md + starting :8890
+```
+
 Details: `docs/tutorial-tdd-mobile-loop.md` §5. Docker proxy alternative:
 `docs/tutorial-tdd-mobile-loop.md` §6.

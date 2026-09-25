@@ -61,6 +61,12 @@ its own `--budget-max` and a wrong/missing secret is denied as `403
 budget-auth-failed` without consuming budget. Unregistered IDs fall back to
 the instance `--budget-max` with no auth check.
 
+Project CLI: `bin/gulyas init <folder>` scaffolds `gulyas.yaml` (commented
+defaults) + `GOAL.md` per task folder; `bin/gulyas run <folder> -- <agent>`
+provisions and jails the agent (it execs the wrapper call below with the
+config's template/worktree/budget). Full CLI reference: `usage-guide.md`
+§1b.
+
 ## Env templates (new environment patterns)
 
 An env template is one named jail+proxy policy: `environment/templates/<alias>.json`.

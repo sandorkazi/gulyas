@@ -26,6 +26,7 @@ along that line so neither has to wade through the other's detail:
 ```text
 gulyas/
   init.sh                               # canonical bootstrap
+  bin/gulyas                            # project CLI: init <folder> / status <folder> / run <folder> -- <agent>
   docs/                                 # you are here
     architecture.html                   # ← high-level diagrams (this set's visual entry)
     tutorial-tdd-mobile-loop.md         # ← hands-on scenario: jailed TDD loop → mobile core

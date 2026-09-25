@@ -47,7 +47,7 @@ widening `offline`.
 
 ```bash
 ./init.sh                 # .venv + render templates + link firejail/proxy configs
-.venv/bin/pytest environment/proxy/tests -q   # expect 38 passed
+.venv/bin/pytest environment/proxy/tests -q   # expect 51 passed
 
 # Start the offline proxy (empty allowlist, budget 50). One proxy per template:
 .venv/bin/python environment/proxy/src/herdr_web_proxy.py \
@@ -210,6 +210,17 @@ change, only the command after `--`:
 bash environment/scripts/herdr-agent-firejail --template offline \
   --worktree ~/.herdr/worktrees/<repo>/tutorial-tdd-mobile \
   --budget-id tdd-mobile --budget-max 50 -- claude   # or codex / opencode / bash
+```
+
+For a real task folder the same launch goes through the project CLI
+(`usage-guide.md` §1b): `init` scaffolds the folder (`gulyas.yaml` with
+commented defaults + `GOAL.md`), `run` provisions, registers the budget and
+jails the agent — underneath it is exactly the wrapper call above:
+
+```bash
+./bin/gulyas init /tmp/tdd-green --template offline --with-agents
+# fill in GOAL.md (point it at the failing test + current src), start :8890, then:
+./bin/gulyas run /tmp/tdd-green -- claude
 ```
 
 Budget math: 15 deterministic `pytest` runs cost 15 loop units; a model GREEN

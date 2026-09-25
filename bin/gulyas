@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""gulyas — project CLI: init a folder, then run jailed agents in it.
+
+Explicit subcommands (no bare-folder magic):
+
+  gulyas init <folder> [--template ALIAS] [--kind KIND] [--with-agents] [--force]
+  gulyas run <folder> [--budget-max N] [--proxy-port P] [--kind K] [--no-provision]
+      [--] <agent> [args...]
+  gulyas status <folder>
+
+Folder states:
+
+  init: missing/empty dir -> scaffold. Dir with gulyas.yaml -> already a
+        project (error, unless --force fills only missing files). Non-empty
+        dir without gulyas.yaml -> error (refuses to hijack, unless --force).
+  run/status: dir without gulyas.yaml -> error (not a gulyas project).
+
+Scaffold: gulyas.yaml (commented defaults — edit by hand or with opencode),
+GOAL.md (task contract), and optionally AGENTS.md (--with-agents).
+
+Stdlib-only, like the rest of this repo.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION = 1
+CONFIG_NAME = "gulyas.yaml"
+GOAL_NAME = "GOAL.md"
+AGENTS_NAME = "AGENTS.md"
+MARKER = "Stay inside this worktree"  # shared with provision-worktree's skip check
+
+
+# -- repo discovery ----------------------------------------------------------
+def find_home() -> Path:
+    override = os.environ.get("GULYAS_HOME")
+    if override:
+        return Path(override)
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        if (parent / "environment" / "templates").is_dir():
+            return parent
+    return here.parent
+
+
+def load_lib(home: Path):
+    sys.path.insert(0, str(home / "environment" / "scripts"))
+    import lib_env_template  # noqa: E402
+
+    return lib_env_template
+
+
+# -- minimal YAML subset (maps of scalars, `#` comments, 2-space nesting) ----
+def _strip_comment(line: str) -> str:
+    in_s = in_d = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        elif ch == "#" and not in_s and not in_d and (i == 0 or line[i - 1] in " \t"):
+            return line[:i]
+    return line
+
+
+def _parse_scalar(s: str):
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        return s[1:-1]
+    if re.fullmatch(r"-?\d+", s):
+        return int(s)
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    return s
+
+
+def parse_simple_yaml(text: str) -> dict:
+    """Parse our tiny config subset. Raises ValueError with a line number."""
+    root: dict = {}
+    stack: list[tuple[int, dict]] = [(-1, root)]
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = _strip_comment(raw).rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:indent]:
+            raise ValueError(f"line {lineno}: tabs not allowed, use spaces")
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            raise ValueError(f"line {lineno}: lists are not supported in gulyas.yaml v1")
+        if stripped.endswith(":"):
+            key, val = stripped[:-1].strip(), ""
+        elif ": " in stripped:
+            key, _, val = stripped.partition(": ")
+            key, val = key.strip(), val.strip()
+        else:
+            raise ValueError(f"line {lineno}: expected 'key: value', got {stripped!r}")
+        if not key or re.search(r"\s", key):
+            raise ValueError(f"line {lineno}: bad key {key!r}")
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        if key in parent:
+            raise ValueError(f"line {lineno}: duplicate key {key!r}")
+        if val == "":
+            child: dict = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _parse_scalar(val)
+    return root
+
+
+# -- config load / validate / resolve ----------------------------------------
+def load_project(folder: Path) -> tuple[dict | None, list[str]]:
+    cfg_path = folder / CONFIG_NAME
+    if not cfg_path.is_file():
+        return None, [f"{folder} is not a gulyas project (no {CONFIG_NAME})"]
+    try:
+        cfg = parse_simple_yaml(cfg_path.read_text())
+    except ValueError as e:
+        return None, [f"{CONFIG_NAME}: {e}"]
+    except OSError as e:
+        return None, [f"cannot read {CONFIG_NAME}: {e}"]
+    if not isinstance(cfg, dict):
+        return None, [f"{CONFIG_NAME}: top level must be a mapping"]
+    errs: list[str] = []
+    if cfg.get("version") != VERSION:
+        errs.append(f"version must be {VERSION}")
+    proj = cfg.get("project", {})
+    if not isinstance(proj, dict):
+        errs.append("project must be a mapping")
+    elif "name" in proj and (not isinstance(proj["name"], str) or not proj["name"].strip()):
+        errs.append("project.name must be a non-empty string")
+    env = cfg.get("environment", {})
+    if not isinstance(env, dict):
+        errs.append("environment must be a mapping")
+    else:
+        if "budget_max" in env and (
+            not isinstance(env["budget_max"], int)
+            or isinstance(env["budget_max"], bool)
+            or env["budget_max"] <= 0
+        ):
+            errs.append("environment.budget_max must be a positive int")
+        if "proxy_port" in env and (
+            not isinstance(env["proxy_port"], int)
+            or isinstance(env["proxy_port"], bool)
+            or not 1 <= env["proxy_port"] <= 65535
+        ):
+            errs.append("environment.proxy_port must be 1..65535")
+    ag = cfg.get("agent", {})
+    if not isinstance(ag, dict):
+        errs.append("agent must be a mapping")
+    return (None if errs else cfg), errs
+
+
+def resolve_project(home: Path, folder: Path, cfg: dict, overrides: dict) -> tuple[dict | None, str | None]:
+    """Merge config + template defaults + CLI overrides. Returns (resolved, error)."""
+    lib = load_lib(home)
+    proj = cfg.get("project", {}) or {}
+    env = cfg.get("environment", {}) or {}
+    ag = cfg.get("agent", {}) or {}
+    alias = overrides.get("template") or env.get("template") or "default"
+    try:
+        t = lib.load_template(str(alias))
+    except (FileNotFoundError, OSError, ValueError) as e:
+        return None, f"unknown environment.template {alias!r}: {e}"
+    net, tag = t.get("network", {}), t.get("agent", {})
+    name = proj.get("name") or folder.name
+    port = overrides.get("proxy_port") or env.get("proxy_port") or int(net.get("proxy_port", 8888))
+    bmax = overrides.get("budget_max") or env.get("budget_max") or int(net.get("budget_max_default", 200))
+    return {
+        "name": str(name),
+        "template": str(alias),
+        "proxy_port": port,
+        "budget_id": str(env.get("budget_id") or name),
+        "budget_max": bmax,
+        "kind": str(overrides.get("kind") or ag.get("kind") or tag.get("default_kind", "claude")),
+        "command": str(ag.get("command") or ""),
+        "port_overridden": bool(overrides.get("proxy_port") or env.get("proxy_port")),
+    }, None
+
+
+def build_run_command(home: Path, folder: Path, r: dict, agent_argv: list[str]) -> list[str]:
+    cmd = [
+        str(home / "environment" / "scripts" / "herdr-agent-firejail"),
+        "--template", r["template"],
+        "--worktree", str(folder),
+        "--kind", r["kind"],
+        "--budget-id", r["budget_id"],
+        "--budget-max", str(r["budget_max"]),
+    ]
+    if r["port_overridden"]:
+        cmd += ["--proxy-port", str(r["proxy_port"])]
+    return cmd + ["--"] + agent_argv
+
+
+# -- scaffold templates -------------------------------------------------------
+CONFIG_TEMPLATE = """# gulyas.yaml — project config for `gulyas run` (edit by hand or with opencode).
+# Uncomment a commented key to override its default.
+# Keys marked [template] default to environment/templates/__TEMPLATE__.json.
+# See the resolved values anytime with: gulyas status .
+
+version: 1
+
+project:
+  name: __NAME__
+  # description: "one line: what this task is about"
+
+environment:
+  template: __TEMPLATE__
+  # proxy_port: __PORT__    # [template] localhost proxy port for this template
+  # budget_id: __NAME__     # default: project.name — per-task accounting id
+  # budget_max: __BUDGET__  # [template] per-task request budget
+
+agent:
+  kind: __KIND__          # [template] HERDR_AGENT value for the pane
+  # command: __KIND__     # used when `gulyas run` gets no agent argv
+"""
+
+GOAL_TEMPLATE = """# GOAL — __NAME__
+
+Fill this in by hand, or ask opencode to draft it from a one-line brief.
+The jailed agent treats this file as its task contract: `gulyas run . -- <agent>`.
+
+## Brief
+
+<!-- one paragraph: what are we building or changing, and why -->
+
+## Done when
+
+- [ ] ... (observable, testable)
+- [ ] ...
+
+## Out of scope
+
+- ...
+
+## Notes
+
+- Worktree is this folder; the agent is jailed here and may only reach the
+  network through the allowlist proxy.
+"""
+
+AGENTS_TEMPLATE = """# AGENTS.md — __NAME__ (gulyas)
+
+> Scaffolded by `gulyas init --with-agents`. Advisory to the model;
+> enforcement is Firejail + proxy + agent deny rules.
+
+- Task contract: read `GOAL.md` first and keep it updated as scope changes.
+- Stay inside this worktree. Never read or write outside it: no `../`,
+  no `~/.ssh`, no `~/.gnupg`, no sibling checkouts.
+- Network: only the proxy at `$http_proxy` may be used. Never use `--noproxy`,
+  direct `curl`/`wget`, `ssh`, or raw sockets. Stay within the task's
+  allowlist and request budget (`BUDGET_ID`, `BUDGET_MAX`).
+- Do not escalate: no `sudo`, no `mount`, no new namespaces, no D-Bus/X11 tricks.
+"""
+
+
+# -- subcommands --------------------------------------------------------------
+def cmd_init(args, home: Path) -> int:
+    lib = load_lib(home)
+    if args.template not in lib.list_templates():
+        print(f"error: unknown --template {args.template!r} "
+              f"(available: {', '.join(lib.list_templates()) or '(none)'})", file=sys.stderr)
+        return 2
+    try:
+        kind_default = str(lib.load_template(args.template).get("agent", {}).get("default_kind", "claude"))
+        net = lib.load_template(args.template).get("network", {})
+    except (FileNotFoundError, OSError, ValueError) as e:
+        print(f"error: cannot load template {args.template!r}: {e}", file=sys.stderr)
+        return 2
+    kind = args.kind or kind_default
+    folder = Path(args.folder).resolve()
+    cfg_path = folder / CONFIG_NAME
+    if cfg_path.is_file() and not args.force:
+        print(f"error: {folder} is already a gulyas project "
+              f"({CONFIG_NAME} exists) — use `gulyas status` / `gulyas run`", file=sys.stderr)
+        return 2
+    nonempty = folder.is_dir() and any(folder.iterdir())
+    if nonempty and not cfg_path.is_file() and not args.force:
+        print(f"error: {folder} exists, is not empty, and has no {CONFIG_NAME} — "
+              f"refusing to hijack it (use --force to scaffold in place, existing files kept)",
+              file=sys.stderr)
+        return 2
+    folder.mkdir(parents=True, exist_ok=True)
+    files = {
+        CONFIG_NAME: CONFIG_TEMPLATE.replace("__NAME__", folder.name)
+        .replace("__TEMPLATE__", args.template)
+        .replace("__PORT__", str(int(net.get("proxy_port", 8888))))
+        .replace("__BUDGET__", str(int(net.get("budget_max_default", 200))))
+        .replace("__KIND__", kind),
+        GOAL_NAME: GOAL_TEMPLATE.replace("__NAME__", folder.name),
+    }
+    if args.with_agents:
+        files[AGENTS_NAME] = AGENTS_TEMPLATE.replace("__NAME__", folder.name)
+    wrote, kept = [], []
+    for name, content in files.items():
+        p = folder / name
+        if p.exists():
+            kept.append(name)
+        else:
+            p.write_text(content)
+            wrote.append(name)
+    print(f"project: {folder}")
+    if wrote:
+        print(f"wrote: {', '.join(wrote)}")
+    if kept:
+        print(f"kept (already existed): {', '.join(kept)}")
+    print(f"template: {args.template} (kind={kind})")
+    print(f"next: fill in {GOAL_NAME} (by hand or with opencode), then `gulyas status {folder}`")
+    return 0
+
+
+def cmd_status(args, home: Path) -> int:
+    folder = Path(args.folder).resolve()
+    if not folder.is_dir():
+        print(f"error: folder not found: {folder}", file=sys.stderr)
+        return 2
+    cfg, errs = load_project(folder)
+    if errs:
+        print(f"error: {'; '.join(errs)}", file=sys.stderr)
+        if not (folder / CONFIG_NAME).is_file():
+            print(f"hint: start one with `gulyas init {folder}`", file=sys.stderr)
+        return 2
+    assert cfg is not None
+    r, err = resolve_project(home, folder, cfg, {})
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+    assert r is not None
+    s = socket.socket()
+    s.settimeout(0.5)
+    proxy_up = s.connect_ex(("127.0.0.1", r["proxy_port"])) == 0
+    s.close()
+    print(f"project:   {r['name']} ({folder})")
+    print(f"template:  {r['template']} (kind={r['kind']})")
+    print(f"worktree:  {folder}")
+    print(f"proxy:     127.0.0.1:{r['proxy_port']} "
+          f"({'up' if proxy_up else 'down — start one per docs/usage-guide.md §2'})")
+    print(f"budget:    id={r['budget_id']} max={r['budget_max']}")
+    print(f"run:       gulyas run {folder} -- {r['command'] or r['kind']}")
+    return 0
+
+
+def cmd_run(args, home: Path) -> int:
+    folder = Path(args.folder).resolve()
+    if not folder.is_dir():
+        print(f"error: folder not found: {folder}", file=sys.stderr)
+        return 2
+    cfg, errs = load_project(folder)
+    if errs:
+        print(f"error: {'; '.join(errs)}", file=sys.stderr)
+        return 2
+    assert cfg is not None
+    overrides = {"budget_max": args.budget_max, "proxy_port": args.proxy_port, "kind": args.kind}
+    r, err = resolve_project(home, folder, cfg, overrides)
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+    assert r is not None
+    agent_argv = list(args.agent)
+    if not agent_argv:
+        if r["command"]:
+            agent_argv = shlex.split(r["command"])
+        else:
+            print("error: no agent command given (append `-- <agent> [args...]` "
+                  "or set agent.command in gulyas.yaml)", file=sys.stderr)
+            return 2
+    if not args.no_provision:
+        prov = str(home / "environment" / "scripts" / "provision-worktree")
+        pr = subprocess.run([prov, "--worktree", str(folder)])
+        if pr.returncode != 0:
+            print("warning: provision-worktree failed — continuing into the jail anyway",
+                  file=sys.stderr)
+    if shutil.which("firejail") is None:
+        print("error: firejail not found on PATH — the jail cannot start here", file=sys.stderr)
+        return 1
+    cmd = build_run_command(home, folder, r, agent_argv)
+    print(f"+ {' '.join(shlex.quote(c) for c in cmd)}")
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as e:
+        print(f"error: cannot launch jail: {e}", file=sys.stderr)
+        return 1
+    return 0  # unreachable
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="gulyas", description="gulyas project CLI: init a folder, run jailed agents in it.")
+    sub = ap.add_subparsers(dest="sub", required=True)
+
+    p_init = sub.add_parser("init", help="scaffold gulyas.yaml + GOAL.md in a folder")
+    p_init.add_argument("folder", help="new project dir (created if missing; must be empty unless --force)")
+    p_init.add_argument("--template", default="default", help="env template alias (default: default)")
+    p_init.add_argument("--kind", default=None, help="agent kind (default: template default_kind)")
+    p_init.add_argument("--with-agents", action="store_true", help="also scaffold AGENTS.md scope file")
+    p_init.add_argument("--force", action="store_true",
+                        help="scaffold into a non-empty dir or existing project (never overwrites files)")
+    p_init.set_defaults(func=cmd_init)
+
+    p_run = sub.add_parser("run", help="launch a jailed agent in a gulyas project folder")
+    p_run.add_argument("folder", help="project dir containing gulyas.yaml")
+    p_run.add_argument("--budget-max", type=int, default=None)
+    p_run.add_argument("--proxy-port", type=int, default=None)
+    p_run.add_argument("--kind", default=None)
+    p_run.add_argument("--no-provision", action="store_true", help="skip provision-worktree step")
+    p_run.add_argument("agent", nargs="*", help="agent command after optional --")
+    p_run.set_defaults(func=cmd_run)
+
+    p_status = sub.add_parser("status", help="show resolved config for a project folder")
+    p_status.add_argument("folder")
+    p_status.set_defaults(func=cmd_status)
+    return ap
+
+
+def main(argv=None) -> int:
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    return args.func(args, find_home())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

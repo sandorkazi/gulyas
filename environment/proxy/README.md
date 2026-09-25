@@ -50,7 +50,7 @@ registry entry + counter). All have `$PROXY_PORT/$ALLOWLIST/$BUDGET_ID/$BUDGET_M
 ## Tests
 
 ```bash
-.venv/bin/pytest environment/proxy/tests -q   # 38 passed
+.venv/bin/pytest environment/proxy/tests -q   # 51 passed
 ```
 
 `test_proxy.py`: allowlist matching + live localhost forward/403/429/reset/
@@ -58,3 +58,7 @@ auth-strip/auth-over-header precedence/JSONL + task registry roundtrip,
 per-task max enforcement, secret rejection without consumption, hot-reload,
 shared-file counters, `--reset`/`--revoke`. `test_env_template.py`: template
 schema/render/wrapper/provision coverage (incl. `--register-only`).
+`test_tutorial.py`: backlog ↔ loop consistency (RED fails on stub, GREEN
+passes, real pytest in tmp copies — no full 15-step run).
+`test_gulyas_cli.py`: `bin/gulyas` init 3-state, `gulyas.yaml` subset parsing,
+template resolution, wrapper command wiring.
