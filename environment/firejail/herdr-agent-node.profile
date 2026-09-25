@@ -32,5 +32,4 @@ whitelist ${HOME}/.local/share/pnpm
 whitelist ${HOME}/.bun
 whitelist ${HOME}/go/pkg/mod
 read-only ${HOME}/go/pkg/mod
-memory-deny-write-execute
 restrict-namespaces

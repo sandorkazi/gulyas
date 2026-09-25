@@ -179,6 +179,28 @@ model, enforced by the agent CLI):
 - `bash environment/scripts/provision-worktree --worktree <WT>` copies both
   into a new worktree (wire it into your Herdr worktree-setup plugin).
 
+### Running opencode in the jail
+
+opencode's TUI and `run` default to a shared background service discovered
+via `~/.local/state/opencode/service.json` + `~/.config/opencode/`. Those
+paths are hidden by the jail's `whitelist` semantics by design (and reaching
+the outside, unjailed server would defeat the jail — the server does the
+file/tool work), so bare `opencode` fails with `Timed out waiting for the
+background service to start`. Always launch it with `--standalone` (private
+in-jail server) **from inside the worktree** (the wrapper jails the
+worktree but does not `cd`; opencode uses the caller's cwd as project dir):
+
+```bash
+cd ~/.herdr/worktrees/myrepo/feat-x
+bash environment/scripts/herdr-agent-firejail --template offline \
+  --worktree ~/.herdr/worktrees/myrepo/feat-x \
+  --budget-id feat-x --budget-max 50 -- opencode --standalone
+```
+
+Do not whitelist opencode's state dirs to "fix" service discovery: that
+would expose `~/.local/share/opencode/auth.json` API keys to the jailed
+agent and let it reach the unjailed server.
+
 ## Notes
 
 * `herdr` binary is assumed per plan but not on PATH on this machine yet —

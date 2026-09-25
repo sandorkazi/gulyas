@@ -20,9 +20,14 @@ and symlinked into `~/.config/firejail/`.
 
 `noroot · nonewprivs · seccomp (+block-secondary) · caps.drop all ·
 private-dev · private-tmp · private-etc (minimal) · dbus none · x11 none ·
-disable-mnt · restrict-namespaces · memory-deny-write-execute ·
+disable-mnt · restrict-namespaces ·
 read-only toolchain (/usr, /bin) · whitelist caches · blacklist secrets
 (~/.ssh, ~/.gnupg, ~/.aws, …)`. `strict` adds a `private-bin` tool gate.
+
+`memory-deny-write-execute` is intentionally **off** in all vanilla templates:
+Bun/Node JITs (opencode TUI, `bun:ffi`) need writable+executable memory and
+fail without it. Re-enable per template via `filesystem.memory_deny_write_execute`
+only for agents verified to run without a JIT.
 
 Syntax notes: `noprofile` is a CLI flag and must never appear in a profile;
 X11 is disabled with `x11 none` (accepted since Firejail 0.9.80).

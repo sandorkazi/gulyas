@@ -30,5 +30,4 @@ whitelist ${HOME}/.cache
 whitelist ${HOME}/.npm
 whitelist ${HOME}/go/pkg/mod
 read-only ${HOME}/go/pkg/mod
-memory-deny-write-execute
 restrict-namespaces

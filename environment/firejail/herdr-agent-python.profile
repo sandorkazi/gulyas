@@ -31,5 +31,4 @@ whitelist ${HOME}/.cache/pip
 whitelist ${HOME}/.cache/uv
 whitelist ${HOME}/go/pkg/mod
 read-only ${HOME}/go/pkg/mod
-memory-deny-write-execute
 restrict-namespaces

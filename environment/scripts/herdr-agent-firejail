@@ -171,4 +171,5 @@ exec firejail \
   --env=HTTP_PROXY="$PROXY_URL" \
   --env=HTTPS_PROXY="$PROXY_URL" \
   --env=NO_PROXY=localhost,127.0.0.1 \
+  --env=no_proxy=localhost,127.0.0.1 \
   "$@"
