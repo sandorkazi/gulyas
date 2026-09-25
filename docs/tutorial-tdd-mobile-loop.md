@@ -47,7 +47,7 @@ widening `offline`.
 
 ```bash
 ./init.sh                 # .venv + render templates + link firejail/proxy configs
-.venv/bin/pytest environment/proxy/tests -q   # expect 34 passed
+.venv/bin/pytest environment/proxy/tests -q   # expect 38 passed
 
 # Start the offline proxy (empty allowlist, budget 50). One proxy per template:
 .venv/bin/python environment/proxy/src/herdr_web_proxy.py \
@@ -77,6 +77,7 @@ One task = one checkout = one jail. With Herdr:
 
 ```bash
 herdr worktree create --branch tutorial/tdd-mobile --no-focus
+herdr worktree list --cwd "$PWD"   # find the real path; replaces <repo> below
 bash environment/scripts/provision-worktree \
   --worktree ~/.herdr/worktrees/<repo>/tutorial-tdd-mobile
 ```
@@ -92,6 +93,12 @@ For this tutorial the default `--worktree` is the current checkout itself —
 the wrapper still blacklists *sibling* worktrees, so the guardrail demo in
 §3 works either way. (New worktrees only carry *tracked* files: commit new
 material first, or run the tutorial from the checkout that contains it.)
+If you created the separate worktree above, point the runner at it explicitly —
+`run-in-jail.sh` will not guess it for you:
+
+```bash
+bash tutorial/tdd-mobile/run-in-jail.sh --worktree ~/.herdr/worktrees/<repo>/tutorial-tdd-mobile
+```
 
 ## 3. Prove the guardrails hold (inside vs outside the jail)
 
@@ -169,7 +176,9 @@ tail -n 5 ~/.local/state/herdr-web-proxy/access.log     # proxy audit (guardrail
 
 Start over any time: `python3 tutorial/tdd-mobile/agentic_loop.py --reset`
 (stub `src` + header-only `tests` + zeroed loop budget), then re-run
-`run-in-jail.sh`. Resetting the *proxy* counter is separate:
+`run-in-jail.sh`. Re-running a completed checkout *without* `--reset` stops
+with `WARN: RED passed` (exit `1`) by design — the test is already green, so
+there is nothing for RED to prove. Resetting the *proxy* counter is separate:
 `.venv/bin/python environment/proxy/src/herdr_web_proxy.py --reset tdd-mobile`
 (counter only) or `--revoke tdd-mobile` (drop cap + secret too).
 
@@ -234,6 +243,7 @@ caps enforced by the container.
 ```bash
 python3 tutorial/tdd-mobile/agentic_loop.py --reset   # loop state only
 .venv/bin/python environment/proxy/src/herdr_web_proxy.py --revoke tdd-mobile
+herdr worktree list --cwd "$PWD"                    # find <child-id> for the next line
 herdr worktree remove --workspace <child-id>          # or: git worktree remove ../tdd-mobile
 ```
 

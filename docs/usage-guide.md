@@ -26,7 +26,7 @@ work can proceed without Herdr installed.
 ```bash
 git clone <this-repo> gulyas && cd gulyas
 ./init.sh                 # .venv + test deps + render templates + symlink configs
-.venv/bin/pytest environment/proxy/tests -q   # expect 34 passed
+.venv/bin/pytest environment/proxy/tests -q   # expect 38 passed
 ./init.sh --check         # tool status only, changes nothing
 ./init.sh --smoke         # setup + run proxy unit tests
 ```

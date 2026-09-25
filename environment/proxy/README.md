@@ -50,7 +50,7 @@ registry entry + counter). All have `$PROXY_PORT/$ALLOWLIST/$BUDGET_ID/$BUDGET_M
 ## Tests
 
 ```bash
-.venv/bin/pytest environment/proxy/tests -q   # 34 passed
+.venv/bin/pytest environment/proxy/tests -q   # 38 passed
 ```
 
 `test_proxy.py`: allowlist matching + live localhost forward/403/429/reset/
