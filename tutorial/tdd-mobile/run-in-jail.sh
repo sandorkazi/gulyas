@@ -53,18 +53,19 @@ else
 fi
 [[ "$PROXY_ONLY" == 1 ]] && exit 0
 
-# Preflight: the vanilla templates whitelist /usr + /bin (read_only_toolchain).
-# On container/overlayfs hosts Firejail rejects that ("invalid whitelist path
-# /usr" — see usage-guide.md troubleshooting). Fail loudly with guidance
-# instead of a cryptic jail error; --no-jail keeps proxy+budget+audit.
+# Preflight: generated profiles mount the toolchain read-only
+# (read_only_toolchain renders `read-only /usr` + `read-only /bin`; the old
+# `whitelist` form was rejected on container/overlayfs hosts with "invalid
+# whitelist path /usr"). Fail loudly with guidance instead of a cryptic
+# jail error; --no-jail keeps proxy+budget+audit.
 if [[ "$NO_JAIL" == 0 ]]; then
-  if ! firejail --noprofile --whitelist=/usr -- /bin/true >/dev/null 2>&1; then
+  if ! firejail --noprofile --read-only=/usr --read-only=/bin -- /bin/true >/dev/null 2>&1; then
     cat >&2 <<EOF
-run-in-jail: full jail unavailable here (firejail cannot whitelist /usr on
-this container/overlayfs host — repo-known limitation, not a tutorial bug).
+run-in-jail: full jail unavailable here (firejail cannot mount /usr read-only
+on this host — repo-known limitation, not a tutorial bug).
 Options:
   --no-jail   run the loop with proxy env + per-task budget + audit (no Firejail)
-  real host   re-run this script where Firejail whitelists /usr (verified path)
+  real host   re-run this script where Firejail mounts /usr read-only (verified path)
 EOF
     exit 3
   fi

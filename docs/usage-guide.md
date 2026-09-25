@@ -212,6 +212,6 @@ only the counter (keeps the cap + secret).
 | unexpected `429` | budget spent → check `access.log` counts, `--reset <id>` or raise `--budget-max` |
 | `502 upstream-error` | DNS/TCP failure (offline template has no DNS by design) → check allowlist + `allow_dns` |
 | `herdr agent list` misclassifies pane | `HERDR_AGENT` not set → launch via wrapper (sets `--env=HERDR_AGENT=…`) |
-| `invalid whitelist path /usr` in container | container-overlayfs-only artifact, not a repo bug; verify on a real host |
+| `invalid whitelist path /usr` in container | fixed: `read_only_toolchain` renders `read-only` (not `whitelist`) since d997e50; re-render (`env-setup --render-all`) if you see it |
 | `pip install` runs remote scripts with full allowance | by design — review packages, narrow allowlist/budget, prefer `offline` for local work |
 | tests write `herdr-agent-web-strict.*` strays | old code path; current tests isolate under `$GULYAS_TEMPLATES_DIR` — update checkout |
