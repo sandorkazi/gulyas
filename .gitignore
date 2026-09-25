@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .coverage
+tutorial/tdd-mobile/.state/
 htmlcov/
 *.egg-info/
 dist/

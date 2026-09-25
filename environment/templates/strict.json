@@ -13,7 +13,7 @@
     "nox11": true,
     "nodbus": true,
     "restrict_namespaces": true,
-    "memory_deny_write_execute": true,
+    "memory_deny_write_execute": false,
     "private_etc": ["passwd", "group", "hostname", "hosts", "resolv.conf", "ssl", "ca-certificates", "crypto-policies", "pki", "nsswitch.conf"],
     "read_only_toolchain": ["/usr"],
     "read_only_dirs": ["${HOME}/.config/herdr"],

@@ -1,0 +1,7 @@
+[
+  {"id": "t1-add-list", "title": "Add tasks and list them", "spec": "add() assigns ids 1,2.., strips titles, rejects blanks; list('all') returns insertion order."},
+  {"id": "t2-toggle", "title": "Toggle active/done", "spec": "toggle() flips done; unknown id raises KeyError."},
+  {"id": "t3-filter", "title": "Filter active/done", "spec": "list('active') and list('done') partition; bad filter raises ValueError."},
+  {"id": "t4-remove-clear", "title": "Remove and clear completed", "spec": "remove() deletes; ids never reused; clear_done() removes done, returns count."},
+  {"id": "t5-persist", "title": "Snapshot round-trip", "spec": "to_dict()/from_dict() restores items and id counter exactly."}
+]

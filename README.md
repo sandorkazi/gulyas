@@ -47,6 +47,7 @@ Two halves, each replaceable:
   `environment/docker/` holds an equivalent image as an alternative.
 
 Full design: [`docs/herdr-firejail-sandbox-plan.md`](docs/herdr-firejail-sandbox-plan.md).
+Tutorial (jailed agentic TDD loop → mobile app): [`docs/tutorial-tdd-mobile-loop.md`](docs/tutorial-tdd-mobile-loop.md).
 Environment details: [`environment/README.md`](environment/README.md).
 Docs index: [`docs/README.md`](docs/README.md) · diagrams: [`docs/architecture.html`](docs/architecture.html) ·
 usage: [`docs/usage-guide.md`](docs/usage-guide.md) · security: [`docs/security-model.md`](docs/security-model.md) ·
@@ -69,12 +70,18 @@ work can proceed without Herdr installed.
 ```bash
 git clone <this-repo> gulyas && cd gulyas
 ./init.sh                 # creates .venv, installs test deps, links firejail configs
-.venv/bin/pytest environment/proxy/tests -q
-bash environment/scripts/env-setup   # interview: pick/edit an env template (alias) for firejail+proxy policy
-# one proxy per template you use (default example; repeat per alias with its port/allowlist/budget):
+.venv/bin/pytest environment/proxy/tests -q   # expect 51 passed
+# Path A — project CLI (recommended): scaffold a task folder, fill GOAL.md, run jailed:
+./bin/gulyas init /tmp/my-task --with-agents   # gulyas.yaml (commented defaults) + GOAL.md [+ AGENTS.md]
+# fill in GOAL.md by hand or with opencode, then start one proxy per template you use:
 .venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
-# from your repo's main checkout:
-herdr worktree create --branch feat/my-task --no-focus
+./bin/gulyas status /tmp/my-task               # resolved policy + proxy up/down
+./bin/gulyas run /tmp/my-task -- opencode --standalone
+# ln -sf $PWD/bin/gulyas ~/.local/bin/gulyas   # optional: put it on PATH
+# Path B — manual scripts (what the CLI automates; full flow: docs/usage-guide.md):
+bash environment/scripts/env-setup   # interview: pick/edit an env template (alias) for firejail+proxy policy
+.venv/bin/python environment/proxy/src/herdr_web_proxy.py --port 8888 --allowlist environment/proxy/config/allowlist.txt --budget-max 200 &
+herdr worktree create --branch feat/my-task --no-focus   # from your repo's main checkout
 bash environment/scripts/provision-worktree --worktree ~/.herdr/worktrees/<repo>/feat-my-task  # agent deny rules + scope
 bash environment/scripts/herdr-agent-firejail --template default --worktree ~/.herdr/worktrees/<repo>/feat-my-task \
   --budget-id feat-my-task --budget-max 200 -- claude
@@ -87,7 +94,10 @@ Reset a task budget: `.venv/bin/python environment/proxy/src/herdr_web_proxy.py 
 ```text
 gulyas/
   init.sh                              # canonical bootstrap (this README's entrypoint)
+  bin/gulyas                           # project CLI: init <folder> / status <folder> / run <folder> -- <agent>
   docs/herdr-firejail-sandbox-plan.md  # goals, threat model, acceptance tests
+  docs/tutorial-tdd-mobile-loop.md   # hands-on scenario: jailed TDD loop → mobile core
+  tutorial/tdd-mobile/               # runnable companion (agentic_loop.py + run-in-jail.sh)
   environment/
     README.md                          # host-.venv vs docker decision + usage
     proxy/src/herdr_web_proxy.py       # stdlib-only egress proxy

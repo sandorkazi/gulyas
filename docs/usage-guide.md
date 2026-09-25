@@ -5,7 +5,9 @@ proxy → worktree → provision → jail → audit → cleanup.
 
 See [`architecture.html`](architecture.html) for the pictures,
 [`template-reference.md`](template-reference.md) for policy fields,
-[`security-model.md`](security-model.md) for what the jail does *not* cover.
+[`security-model.md`](security-model.md) for what the jail does *not* cover,
+[`tutorial-tdd-mobile-loop.md`](tutorial-tdd-mobile-loop.md) for the hands-on
+jailed TDD scenario that exercises this whole page end to end.
 
 ## 0. Requirements
 
@@ -24,7 +26,7 @@ work can proceed without Herdr installed.
 ```bash
 git clone <this-repo> gulyas && cd gulyas
 ./init.sh                 # .venv + test deps + render templates + symlink configs
-.venv/bin/pytest environment/proxy/tests -q   # expect 34 passed
+.venv/bin/pytest environment/proxy/tests -q   # expect 51 passed
 ./init.sh --check         # tool status only, changes nothing
 ./init.sh --smoke         # setup + run proxy unit tests
 ```
@@ -34,6 +36,51 @@ What `init.sh` links (repo stays source of truth, never copy):
 - `environment/firejail/*.profile`, `*.net` → `~/.config/firejail/`
 - `environment/proxy/config/allowlist*.txt` → `~/.config/herdr-web-proxy/`
 - State dir created: `~/.local/state/herdr-web-proxy/` (`budget.json`, `access.log`)
+
+## 1b. Project CLI — `bin/gulyas` (recommended path)
+
+The CLI automates §§2–4 per task folder. The folder holds `gulyas.yaml`
+(project config), `GOAL.md` (task contract), and optionally `AGENTS.md`
+(scope). Subcommands are explicit; folder states are enforced:
+
+```bash
+./bin/gulyas init /tmp/my-task --with-agents  # missing/empty dir -> scaffold
+# fill in GOAL.md by hand or with opencode, then (after starting the proxy, §2):
+./bin/gulyas status /tmp/my-task              # resolved template/port/budget + proxy up/down
+./bin/gulyas run /tmp/my-task -- opencode --standalone   # provision -> jail -> agent
+# ln -sf $PWD/bin/gulyas ~/.local/bin/gulyas  # optional: put it on PATH
+```
+
+Rules: `init` where `gulyas.yaml` already exists errors (continue with
+`run`/`status`); `init` in a non-empty folder without `gulyas.yaml` errors —
+it refuses to hijack foreign files (`--force` scaffolds in place and never
+overwrites). `run`/`status` where `gulyas.yaml` is missing errors (not a
+gulyas project). `GULYAS_HOME` overrides the repo location (default:
+auto-detected from the script path, symlink-safe).
+
+`gulyas.yaml` (edit by hand or with opencode; `gulyas status` shows the
+resolved values — commented keys are live defaults, uncomment to override):
+
+```yaml
+version: 1
+project:
+  name: my-task
+  # description: "one line: what this task is about"
+environment:
+  template: default        # environment/templates/<alias>.json
+  # proxy_port: 8888      # default: template proxy_port
+  # budget_id: my-task    # default: project.name (per-task accounting id)
+  # budget_max: 200       # default: template budget_max_default
+agent:
+  kind: claude             # default: template default_kind (HERDR_AGENT value)
+  # command: claude       # used when `run` gets no agent argv
+```
+
+`run` maps 1:1 onto the manual flow below: `provision-worktree` (§3, skip
+with `--no-provision`), then `herdr-agent-firejail --template … --worktree
+<folder> …` (§4, with `--budget-max` / `--proxy-port` / `--kind`
+overriding the config). The template proxy (§2) must be up first — `status`
+reports `down` until it is.
 
 ## 2. Start the proxy (one instance per template you use)
 
@@ -205,11 +252,11 @@ only the counter (keeps the cap + secret).
 | Symptom | Likely cause → fix |
 | --- | --- |
 | `firejail: line … is invalid` | stale hand-edited profile → re-render (`env-setup --render-all`), never hand-edit generated files |
-| agent sees sibling worktrees | wrapper bypassed / old profile → always launch via `herdr-agent-firejail` (adds `--blacklist ~/.herdr/worktrees`) |
+| agent sees sibling worktrees | wrapper bypassed / old profile → always launch via `gulyas run` / `herdr-agent-firejail` (adds `--blacklist ~/.herdr/worktrees`) |
 | every fetch `403` | wrong proxy port/allowlist for the template, or `offline` template → `--show-template` to compare, start matching proxy |
 | unexpected `429` | budget spent → check `access.log` counts, `--reset <id>` or raise `--budget-max` |
 | `502 upstream-error` | DNS/TCP failure (offline template has no DNS by design) → check allowlist + `allow_dns` |
 | `herdr agent list` misclassifies pane | `HERDR_AGENT` not set → launch via wrapper (sets `--env=HERDR_AGENT=…`) |
-| `invalid whitelist path /usr` in container | container-overlayfs-only artifact, not a repo bug; verify on a real host |
+| `invalid whitelist path /usr` in container | fixed: `read_only_toolchain` renders `read-only` (not `whitelist`) since d997e50; re-render (`env-setup --render-all`) if you see it |
 | `pip install` runs remote scripts with full allowance | by design — review packages, narrow allowlist/budget, prefer `offline` for local work |
 | tests write `herdr-agent-web-strict.*` strays | old code path; current tests isolate under `$GULYAS_TEMPLATES_DIR` — update checkout |

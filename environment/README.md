@@ -8,6 +8,9 @@ proxy is reachable under that rule with zero port publishing. A container needs
 `network_mode: host` to land on the same loopback, which is fine but adds a
 moving part. Keep host default; container for CI / shared runners.
 
+Hands-on path through all of the below: [`../docs/tutorial-tdd-mobile-loop.md`](../docs/tutorial-tdd-mobile-loop.md)
+(jailed agentic TDD loop building a mobile-app core on the `offline` template).
+
 ## Layout
 
 ```text
@@ -57,6 +60,12 @@ accounted separately. Launch also registers `(id, max, secret)` in
 its own `--budget-max` and a wrong/missing secret is denied as `403
 budget-auth-failed` without consuming budget. Unregistered IDs fall back to
 the instance `--budget-max` with no auth check.
+
+Project CLI: `bin/gulyas init <folder>` scaffolds `gulyas.yaml` (commented
+defaults) + `GOAL.md` per task folder; `bin/gulyas run <folder> -- <agent>`
+provisions and jails the agent (it execs the wrapper call below with the
+config's template/worktree/budget). Full CLI reference: `usage-guide.md`
+§1b.
 
 ## Env templates (new environment patterns)
 
@@ -175,6 +184,28 @@ model, enforced by the agent CLI):
 - `environment/agent/AGENTS.md.snippet` — scope block for `AGENTS.md`.
 - `bash environment/scripts/provision-worktree --worktree <WT>` copies both
   into a new worktree (wire it into your Herdr worktree-setup plugin).
+
+### Running opencode in the jail
+
+opencode's TUI and `run` default to a shared background service discovered
+via `~/.local/state/opencode/service.json` + `~/.config/opencode/`. Those
+paths are hidden by the jail's `whitelist` semantics by design (and reaching
+the outside, unjailed server would defeat the jail — the server does the
+file/tool work), so bare `opencode` fails with `Timed out waiting for the
+background service to start`. Always launch it with `--standalone` (private
+in-jail server) **from inside the worktree** (the wrapper jails the
+worktree but does not `cd`; opencode uses the caller's cwd as project dir):
+
+```bash
+cd ~/.herdr/worktrees/myrepo/feat-x
+bash environment/scripts/herdr-agent-firejail --template offline \
+  --worktree ~/.herdr/worktrees/myrepo/feat-x \
+  --budget-id feat-x --budget-max 50 -- opencode --standalone
+```
+
+Do not whitelist opencode's state dirs to "fix" service discovery: that
+would expose `~/.local/share/opencode/auth.json` API keys to the jailed
+agent and let it reach the unjailed server.
 
 ## Notes
 

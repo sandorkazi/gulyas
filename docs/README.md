@@ -13,6 +13,7 @@ along that line so neither has to wade through the other's detail:
 | Doc | Audience | Answers |
 | --- | --- | --- |
 | [`architecture.html`](architecture.html) | everyone, first | What are the pieces, how do they fit, what flows where? (6 high-level diagrams, offline-safe) |
+| [`tutorial-tdd-mobile-loop.md`](tutorial-tdd-mobile-loop.md) | newcomers, hands-on | End-to-end scenario: jailed agentic TDD loop builds a mobile app core (`offline` template, proxy `:8890`, budget, audit) |
 | [`usage-guide.md`](usage-guide.md) | task owners | How do I bootstrap, start proxies, provision worktrees, launch agents, reset budgets, debug? |
 | [`template-reference.md`](template-reference.md) | policy authors | What does each `environment/templates/<alias>.json` field render to? Which vanilla template do I clone? |
 | [`security-model.md`](security-model.md) | policy authors, reviewers | What is enforced vs advisory? What residual risk remains? What must I tailor per task? |
@@ -25,8 +26,10 @@ along that line so neither has to wade through the other's detail:
 ```text
 gulyas/
   init.sh                               # canonical bootstrap
+  bin/gulyas                            # project CLI: init <folder> / status <folder> / run <folder> -- <agent>
   docs/                                 # you are here
     architecture.html                   # ← high-level diagrams (this set's visual entry)
+    tutorial-tdd-mobile-loop.md         # ← hands-on scenario: jailed TDD loop → mobile core
     usage-guide.md                      # ← daily workflows, troubleshooting
     template-reference.md               # ← schema + vanilla matrix + render rules
     security-model.md                   # ← threat model + residual risk + ops duties
@@ -47,7 +50,7 @@ gulyas/
 
 ## Reading order
 
-1. New here? Root `README.md` quickstart → `architecture.html` §1–§3.
+1. New here? Root `README.md` quickstart → `architecture.html` §1–§3 → `tutorial-tdd-mobile-loop.md` for the hands-on loop.
 2. Running a task? `usage-guide.md` start to finish.
 3. Defining policy? `template-reference.md` + `security-model.md`, then
    `bash environment/scripts/env-setup`.

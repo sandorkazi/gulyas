@@ -27,10 +27,9 @@ blacklist ${HOME}/.pki
 blacklist ${HOME}/.docker
 blacklist ${HOME}/.git-credentials
 noblacklist ${HOME}/.herdr/worktrees
-whitelist /usr
+read-only /usr
 whitelist ${HOME}/.npm
 whitelist ${HOME}/go/pkg/mod
 read-only ${HOME}/go/pkg/mod
 private-bin bash,sh,env,git,python3,node,npm,ls,cat,grep,sed,find
-memory-deny-write-execute
 restrict-namespaces

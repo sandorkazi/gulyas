@@ -87,4 +87,5 @@ next (one proxy per template you use; default shown):
   2) herdr worktree create --branch feat/my-task --no-focus   # where herdr lives
   3) bash environment/scripts/provision-worktree --worktree <WT>
   4) bash environment/scripts/herdr-agent-firejail --template default --worktree <WT> --budget-id <id> --budget-max 200 -- claude
+  or via the project CLI: ./bin/gulyas init <dir> --with-agents && ./bin/gulyas run <dir> -- <agent>
 EOF
